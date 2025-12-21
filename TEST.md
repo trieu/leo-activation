@@ -1,97 +1,142 @@
-To help you test your **LEO CDP AI Assistant**, I have organized sample data into three categories: **API Request Payloads** (to send to your FastAPI endpoint), **Mock Customer Profiles** (to simulate the LEO CDP database), and **Existing Segments**.
+# TEST MESSAGES
 
-### 1. API Request Samples (`POST /chat`)
+10 test messages designed to validate your refactored FunctionGemma agent. 
+They cover **basic controls**, **segmentation logic**, **activation workflows**, and **complex multi-step reasoning**.
 
-These are JSON payloads you can send to `http://localhost:8000/chat` using Postman, cURL, or Python's `requests` library.
+You can send these JSON payloads directly to your `/chat` endpoint.
 
-| Use Case | Sample JSON Payload |
-| --- | --- |
-| **Basic Weather** | `{"prompt": "What is the weather like in Saigon right now?"}` |
-| **Segment Creation** | `{"prompt": "Create a new segment for High-Value customers who live in Hanoi."}` |
-| **Multi-channel Activation** | `{"prompt": "Send a Zalo message to the 'New Leads' segment with the text 'Welcome to our store!' and also send an email to them."}` |
-| **Weather-based Logic** | `{"prompt": "Check the weather in Tokyo. If it is cold, I want to create a segment called 'Winter Shoppers'."}` |
-| **Date & Activity** | `{"prompt": "What is today's date? Then delete the segment named 'Expired Leads'."}` |
+### **Group 1: Basic Tool Control (Sanity Checks)**
 
----
+These ensure the model can call simple tools correctly without hallucinating LEO CDP logic.
 
-### 2. Mock LEO CDP Customer Profiles (`customers.json`)
-
-You can use this data to mock the "Developer's Turn" execution if you decide to add a tool that searches for specific users.
+**1. Basic Weather Check**
+*Tests `get_current_weather*`
 
 ```json
-[
-  {
-    "id": "user_001",
-    "email": "nguyen.van@example.vn",
-    "full_name": "Nguyen Van A",
-    "location": "Ho Chi Minh City",
-    "total_spend": 1250.50,
-    "last_login": "2025-12-15",
-    "loyalty_tier": "Gold",
-    "zalo_id": "zalo_abc_123"
-  },
-  {
-    "id": "user_002",
-    "email": "le.thi@example.com",
-    "full_name": "Le Thi B",
-    "location": "Hanoi",
-    "total_spend": 45.00,
-    "last_login": "2025-11-20",
-    "loyalty_tier": "Silver",
-    "zalo_id": "zalo_def_456"
-  },
-  {
-    "id": "user_003",
-    "email": "tanaka.h@example.jp",
-    "full_name": "Hiroshi Tanaka",
-    "location": "Tokyo",
-    "total_spend": 3200.00,
-    "last_login": "2025-12-20",
-    "loyalty_tier": "Platinum",
-    "zalo_id": null
-  }
-]
+{
+  "prompt": "What is the current weather in Ho Chi Minh City?"
+}
+
+```
+
+**2. Date Retrieval**
+*Tests `get_date*`
+
+```json
+{
+  "prompt": "Can you check today's date for me?"
+}
 
 ```
 
 ---
 
-### 3. Mock LEO CDP Segments (`segments.csv`)
+### **Group 2: LEO CDP Segmentation**
 
-If you want to test the `manage_leo_segment` or `activate_channel` tools, here is a list of segments that you can assume "already exist" in your system.
+These test the `manage_leo_segment` tool, ensuring the model extracts criteria and names correctly.
 
-| Segment Name | Description | Member Count | Primary Channel |
-| --- | --- | --- | --- |
-| `VIP-Members` | Users with >$1000 spend | 450 | Email |
-| `New-Leads` | Signed up in last 7 days | 1,200 | Zalo |
-| `Cart-Abandoners` | Items in cart for >24h | 89 | Web Push |
-| `Hanoi-Local` | Users located in Hanoi | 3,400 | Mobile Push |
+**3. Simple Segmentation**
+*Tests creation with explicit time window.*
 
-### 4. Integration Test Script (Python)
-
-You can run this simple script to test your running FastAPI server with multiple scenarios:
-
-```python
-import requests
-
-URL = "http://localhost:8000/chat"
-
-test_prompts = [
-    "What time is it and what is the weather in Tokyo?",
-    "I need to create a segment for 'Zalo Active Users' and send them a Zalo message saying 'Hello!'",
-    "Send an email to the 'VIP-Members' segment about the upcoming winter sale."
-]
-
-for prompt in test_prompts:
-    print(f"\n--- Testing Prompt: {prompt} ---")
-    response = requests.post(URL, json={"prompt": prompt})
-    if response.status_code == 200:
-        data = response.json()
-        print(f"Assistant: {data['answer']}")
-        print(f"Debug Info: {data['debug']}")
-    else:
-        print(f"Error: {response.text}")
+```json
+{
+  "prompt": "Create a new segment for all users who visited the website in the last 7 days."
+}
 
 ```
 
-This data will allow you to verify that **FunctionGemma** is correctly mapping the `prompt` to the OOP-based `activate_channel` logic you built for the LEO CDP framework.
+**4. Complex Logical Segmentation**
+*Tests handling of multiple conditions (Logic: AND).*
+
+```json
+{
+  "prompt": "I need a segment named 'High Value Leads' consisting of users with a Lifetime Value over $500 who have also clicked on an email this month."
+}
+
+```
+
+**5. Behavioral Segmentation**
+*Tests specific behavioral triggers.*
+
+```json
+{
+  "prompt": "Segment users who added items to their cart but did not complete the checkout process within 24 hours."
+}
+
+```
+
+---
+
+### **Group 3: Channel Activation**
+
+These test the `activate_channel` tool, verifying the model can link segments to external platforms.
+
+**6. Social Ad Activation**
+*Tests standard activation to a major ad network.*
+
+Facebook
+
+```json
+{
+  "prompt": "Activate the 'Summer Sale Target' segment on Facebook Page immediately."
+}
+
+```
+
+Zalo 
+
+```json
+{
+  "prompt": "Activate the 'Summer Sale Target' segment on Zalo OA immediately."
+}
+
+```
+
+
+
+**7. Zalo Marketing**
+*Tests activation to Zalo.*
+
+```json
+{
+  "prompt": "for segment 'new user at channel Zalo, send 'hello @user'"
+}
+
+```
+
+
+---
+
+### **Group 4: Advanced / Multi-Step**
+
+These require the model to reason, potentially call multiple tools, or handle mixed intents.
+
+**8. Contextual Activation (Weather + CDP)**
+*Tests if the model can use environmental data (weather) to influence CDP decisions.*
+
+```json
+{
+  "prompt": "Check the weather in London. If it's raining, create a segment called 'London Rain Target' for users in that region."
+}
+
+```
+
+**9. Multi-Tool Execution**
+*Tests doing two distinct tasks in one prompt.*
+
+```json
+{
+  "prompt": "First, create a segment for 'VIP Users', and then immediately activate that segment on Google Customer Match."
+}
+
+```
+
+**10. Ambiguous/Correction Handling**
+*Tests how the model handles a request that implies action but might need default assumptions (or how it formats the error if 'TikTok' isn't a configured channel).*
+
+```json
+{
+  "prompt": "Send to our segment 'Churn Risk' using Zalo OA  with message 'Hello' right now."
+}
+
+```

@@ -4,7 +4,7 @@ URL = "http://localhost:8000/chat"
 
 test_prompts = [
     "What time is it and what is the weather in Ho Chi Minh City?",
-    "I need to create a segment for 'Zalo Active Users' and send them a Zalo message saying 'Hello!'",
+    "Using Zalo, send to all profiles in this segment 'Zalo Active Users' with message saying 'Hello!'",
     "Send an email to the 'VIP-Members' segment about the upcoming winter sale."
 ]
 

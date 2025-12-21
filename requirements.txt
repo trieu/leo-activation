@@ -7,3 +7,4 @@ python-dotenv
 requests
 pydantic
 accelerate
+google-genai
