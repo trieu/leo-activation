@@ -2,6 +2,10 @@
 
 LEO Activation is an intelligent backend service designed to bridge the gap between complex Customer Data Platforms (CDP) and marketing teams. By leveraging **Google's FunctionGemma-270M**, it provides a conversational AI interface for the [LEO CDP Framework](https://github.com/trieu/leo-cdp-framework), allowing users to manage segments and trigger omnichannel marketing activations through natural language.
 
+![Screenshot: LEO Activation UI](screenshot.png)
+
+*Screenshot: chat demo and activation flow.*
+
 ## 🚀 Overview
 
 LEO Activation combines a function-calling-first LLM (FunctionGemma) with a semantic fallback (Gemini) to create a robust, production-oriented agent for the LEO CDP. The runtime implements a guarded four-step flow:
