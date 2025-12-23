@@ -119,6 +119,9 @@ class FunctionGemmaEngine(BaseLLMEngine):
         # FunctionGemma IGNORES tools if this specific line is missing.
         SYSTEM_TRIGGER = "You are a model that can do function calling with the following functions"
         
+        # Check for existing trigger, if not present, inject it
+        # check for both 'system' and 'developer' roles to be safe
+        # For example: valid message for has_trigger = true: {"role": "developer", "content": "You are a model that can do function calling with the following functions..."}
         has_trigger = any(
             m.get("role") in ["system", "developer"] and SYSTEM_TRIGGER in m.get("content", "")
             for m in messages
@@ -140,7 +143,8 @@ class FunctionGemmaEngine(BaseLLMEngine):
             return_dict=True,
             return_tensors="pt"
         ).to(self.model.device)
-
+        
+        # Use torch inference mode for efficiency because we don't need gradients
         with torch.inference_mode():
             output = self.model.generate(
                 **inputs,
