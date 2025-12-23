@@ -84,25 +84,28 @@ class MarketingConfigs:
     EMAIL_PROVIDER: str = os.getenv("EMAIL_PROVIDER", "smtp").lower()
     # Expected values: "smtp", "sendgrid"
 
+    # -------- Brevo --------
+    BREVO_API_KEY: Optional[str] = os.getenv("BREVO_API_KEY")
+    BREVO_FROM_EMAIL: Optional[str] = os.getenv("BREVO_FROM_EMAIL")
+    BREVO_FROM_NAME: Optional[str] = os.getenv("BREVO_FROM_NAME")
+    
+    # -------- SendGrid --------
     SENDGRID_API_KEY: Optional[str] = os.getenv("SENDGRID_API_KEY")
     SENDGRID_FROM: Optional[str] = os.getenv("SENDGRID_FROM")
-
+    
+    # -------- SMTP --------
     SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
-
     try:
         SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
     except ValueError:
         raise RuntimeError("SMTP_PORT must be a valid integer")
-
     SMTP_USERNAME: Optional[str] = os.getenv("SMTP_USERNAME")
     SMTP_PASSWORD: Optional[str] = os.getenv("SMTP_PASSWORD")
-
-    # Accept common truthy values to reduce config friction
     SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "1").lower() in (
         "1",
         "true",
         "yes",
-    )
+    )  # Accept common truthy values to reduce config friction
 
     # --------------------------------------------------------
     # Zalo Official Account
