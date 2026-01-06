@@ -136,11 +136,9 @@ Snapshot để tránh “segment drift” khi gửi.
 
 ## Task: Setup Activation DB Schema
 
-**Tables**
-- campaign  
-- segment_snapshot  
-- agent_task  
-- delivery_log  
+**SQL**
+
+Check the [SQL Scripts Documentation](../sql-scripts/README.md) for database setup.
 
 **Tech**
 - PostgreSQL 16+  
