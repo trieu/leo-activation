@@ -22,6 +22,22 @@ Nhấn mạnh: 12 ngày là delivery sprint, không phải nghiên cứu.
 Audience cần hiểu: cái này dùng để ship, không phải để tranh luận triết học.
 -->
 
+
+---
+
+
+![LEO Activation Architecture](./leo-activation-for-cdp.png)
+
+<!--
+Speaker Notes:
+Slide này dùng để anchor nhận thức chung cho cả phòng.
+Không đi sâu chi tiết kỹ thuật ở đây.
+Chỉ cần mọi người nhìn và hiểu:
+Activation không phải 1 service đơn lẻ,
+mà là luồng xuyên suốt từ Event → Decision → Channel.
+-->
+
+
 ---
 
 ## Why LEO Activation?
@@ -452,7 +468,7 @@ PO và Tech Lead phải bảo vệ DoD này.
 
 ## Final Principle
 
-**LEO Activation không phải “gửi tin”.**
+**LEO Activation không phải 1 system “gửi tin”.**
 
 Nó là:
 - Hệ ra quyết định  
