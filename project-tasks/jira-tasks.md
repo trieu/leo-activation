@@ -3,8 +3,8 @@ marp: true
 title: LEO Activation – Kế Hoạch Triển Khai POC 12 Ngày
 theme: default
 paginate: true
-header: 'LEO Activation (POC) • Sprint Plan v2.2 (VN)'
-footer: 'Jan 08, 2026'
+header: 'LEO Activation (POC) • Sprint Plan (VN)'
+footer: 'v1.0'
 style: |
   section { font-size: 22px; }
   h1 { color: #2d3436; }
@@ -38,7 +38,7 @@ Mục tiêu duy nhất: ship được hệ activation chạy thật.
 ## Product Vision – LEO Activation
 
 **LEO Activation không phải là hệ gửi thông báo.**  
-Nó là **Decision & Execution Engine** nằm giữa CDP và các kênh.
+Nó là **Decision & Execution Engine** nằm giữa CDP và các kênh liên lạc với **customer / user**
 
 ### Chúng ta muốn giải quyết điều gì?
 
@@ -49,10 +49,10 @@ Nó là **Decision & Execution Engine** nằm giữa CDP và các kênh.
 ### LEO Activation tồn tại để:
 
 - Biến **dữ liệu → quyết định → hành động** trong *thời gian đúng*
-- Cho phép **AI ra quyết định có kiểm soát**, không phải đoán mò
+- Cho phép **AI ra quyết định có kiểm soát** theo kịch bản và content template, không phải đoán mò
 - Mọi hành động activation đều **trace logs được – audit logs được – giải thích được lý do hành động**
 
-> **Activation không phải là gửi tin.  
+> **Activation không phải là gửi tin thông báo.  
 > Activation là chọn đúng hành động, cho đúng người, vào đúng thời điểm.**
 
 <!--
@@ -67,7 +67,7 @@ Activation = decision system, không phải messaging system.
 
 ---
 
-![bg right:55% fit](../leo-activation-framework.png)
+![bg right:56% fit](../leo-activation-framework.png)
 
 ## Bức tranh tổng thể  về Flow
 
@@ -105,7 +105,7 @@ Không có chuyện “làm song song cho nhanh” nếu chưa xong phase dướ
 
 <!--
 Speaker Notes:
-Phase này không sexy nhưng quyết định toàn bộ hệ.
+Phase này là nền tảng dữ liệu database cho quyết định toàn bộ hệ thống.
 Nếu nền sai, AI phía trên chỉ là diễn.
 -->
 
@@ -120,7 +120,7 @@ Activation là hệ thống ghi nhận sự thật. Nếu schema sai, mọi quy�
 Khởi tạo PostgreSQL 16 với schema production đã cung cấp. Đảm bảo kích hoạt đầy đủ extensions (`vector`, `pgcrypto`).
 
 **Technical Tasks:**
-1. Chạy `schema.sql` với Postgres instance.  
+1. Chạy `schema.sql` với Postgres 16+ instance.  
 2. Kiểm tra Partitioning trên bảng `marketing_event`.  
 3. Kiểm tra RLS (Row Level Security).
 
@@ -207,6 +207,7 @@ Marketing không viết code. AI phải dịch ngôn ngữ tự nhiên thành h�
 
 **Mô tả:**  
 Deploy FunctionGemma model (qua API wrapper) để dịch intent marketing thành các function call có cấu trúc.
+Đọc kỹ technical notes https://blog.google/innovation-and-ai/technology/developers-tools/functiongemma/
 
 **Technical Tasks:**
 1. Setup LLM Gateway.  
@@ -259,24 +260,30 @@ Debug AI = đọc bảng này.
 ## [LEO Activation – 06] Unified Dispatcher & Delivery Log
 
 **WHY – Vì sao task này tồn tại?**  
-Không có delivery log thì không có sự thật.
+Mọi hành động gửi đi đều phải được ghi nhận rõ ràng.  
+Nếu không lưu được delivery log trong database, hệ thống sẽ không biết đã gửi gì, gửi cho ai và kết quả ra sao.
 
 **Mô tả:**  
-Lớp trừu tượng điều phối lệnh tới các channel adapter và ghi log kết quả.
+Xây dựng một Dispatcher dùng Celery + Redis Queue để gửi thông báo một cách bất đồng bộ,  
+đồng thời lưu đầy đủ trạng thái gửi (delivery log) vào PostgreSQL làm nguồn dữ liệu đáng tin cậy.
 
 **Technical Tasks:**
-1. Dispatcher (Factory).  
-2. Ghi log trước & sau khi gửi.  
-3. Deterministic `event_id`.
+1. Tạo Dispatcher (Factory Pattern) để gọi đúng channel adapter.  
+2. Đẩy tác vụ gửi vào Celery Queue (Redis làm broker).  
+3. Ghi delivery log với `event_id` theo cách hashing vào PostgreSQL **trước và sau** khi gọi API bên ngoài.  
 
 **Definition of Done (DoD):**
-- [ ] Log đủ status & response.  
-- [ ] Fail log → không gửi.
+- [ ] Mỗi lần dispatch đều có bản ghi `delivery_log` được lưu thành công trong PostgreSQL.  
+- [ ] `delivery_log` chứa đầy đủ trạng thái gửi và phản hồi từ provider.  
+- [ ] Nếu không ghi được log, send task sẽ bị dừng, không gọi API bên ngoài.
 
 <!--
 Speaker Notes:
-Tin log, không tin lời kể.
+Dispatcher là nơi “ra tay”, delivery_log là nơi “ghi sổ”.
+Không có log trong Postgres thì không có sự thật để tin.
+Celery giúp gửi không block, nhưng database mới là nguồn dữ liệu chính.
 -->
+
 
 ---
 
@@ -291,21 +298,20 @@ Implement các connector cụ thể cho thị trường Việt Nam.
 **Technical Tasks:**
 - Zalo Adapter.  
 - Email Adapter.  
-- Chuẩn hóa số điện thoại.
+- Chuẩn hóa format số điện thoại (phonenumbers) và check email (email-validator)
 
 **Definition of Done (DoD):**
-- [ ] Gửi ZNS thành công.  
-- [ ] Số rác không crash worker.
+- [ ] Gửi email thành công
+- [ ] Gửi ZNS thành công và Zalo OA thành công cho người đã theo dõi kênh OA  
+- [ ] Email sai format, số phone rác không crash worker.
 
 <!--
 Speaker Notes:
 Test cả case xấu nhất.
-Channel hay chết vì lỗi bẩn.
+Channel hay chết vì lỗi sai data do số điện thoại và email .
 -->
 
 ---
-
-
 
 ## [LEO Activation – 08] Channel Adapter: Facebook Page
 
@@ -338,24 +344,27 @@ Không được trộn FB logic chung với Zalo hay Email.
 ## [LEO Activation – 09] Channel Adapter: Push & Telegram
 
 **WHY – Vì sao task này tồn tại?**  
-Realtime channel cho thấy hệ còn sống.
+Kênh realtime giúp người dùng cảm nhận hệ thống đang phản hồi ngay lập tức, không bị “trễ” hay “im lặng”.
 
 **Mô tả:**  
-Các kênh thông báo thời gian thực.
+Triển khai các kênh thông báo thời gian thực để gửi phản hồi nhanh cho người dùng ngay sau khi có quyết định activation.
 
 **Technical Tasks:**
-1. Telegram Bot API.  
-2. Push (FCM / PushAlert).  
-3. Queue riêng.
+1. Tích hợp Telegram Bot API để gửi tin nhắn trực tiếp.  
+2. Tích hợp Push Notification (Firebase FCM hoặc PushAlert).  
+3. Tách queue xử lý riêng cho các kênh realtime để không bị chậm do các tác vụ khác.
 
 **Definition of Done (DoD):**
-- [ ] Push < 1s.  
-- [ ] Telegram không lỗi Markdown.
+- [ ] Thông báo Push được gửi tới thiết bị trong vòng < 1 giây sau khi dispatch.  
+- [ ] Tin nhắn Telegram hiển thị đúng nội dung, không lỗi định dạng (Markdown).
 
 <!--
 Speaker Notes:
-Realtime trả lời chậm = cảm giác hệ đang chết hay status = down 
+Kênh realtime tạo cảm giác “hệ đang sống”.
+Nếu phản hồi chậm, người dùng sẽ nghĩ hệ bị treo hoặc lỗi,
+dù logic phía sau vẫn chạy đúng.
 -->
+
 
 ---
 
@@ -366,18 +375,20 @@ Realtime trả lời chậm = cảm giác hệ đang chết hay status = down
 ## [LEO Activation – 10] End-to-End Traceability Test
 
 **WHY – Vì sao task này tồn tại?**  
-Hệ không trace được = không vận hành được.
+Nếu không theo dõi được toàn bộ hành trình của một event, hệ thống sẽ không thể vận hành, debug hay tối ưu trong thực tế.
 
 **Mô tả:**  
-Kiểm chứng "Luồng vàng" từ Event tới Delivery Log.
+Kiểm tra khả năng truy vết đầy đủ một luồng activation hoàn chỉnh:
+từ lúc event được ghi nhận → AI ra quyết định → gửi thông báo → ghi nhận kết quả.
 
 **Definition of Done (DoD):**
-- [ ] 1 query join ra full journey.  
-- [ ] Không orphan log.
+- [ ] Chỉ với **một câu SQL**, có thể xem toàn bộ hành trình của một user/event.  
+- [ ] Không tồn tại log bị thiếu hoặc không liên kết được (orphan log).
 
 <!--
 Speaker Notes:
-Đây là bài test cho CTO.
+Task này trả lời câu hỏi: “Hệ có giải thích được chính nó không?”
+Nếu product owner không trace được 1 case end-to-end, hệ chưa sẵn sàng chạy thật.
 -->
 
 ---
@@ -391,7 +402,7 @@ Demo không được sập.
 Đảm bảo hệ thống chịu được tải Demo POC.
 
 **Definition of Done (DoD):**
-- [ ] 5k events/phút ổn định.  
+- [ ] Xử lý 5000 profiles xong trong 1 phút ổn định.  
 - [ ] API error < 1%.
 
 <!--
@@ -419,3 +430,28 @@ Load test để ngủ ngon trước demo.
    - Đẩy toàn bộ task `[LEO Activation – xx]` vào Jira. 
    - Gán owner rõ cho từng ticket trước khi bắt đầu Day 1.
 
+---
+
+## LEO Activation – Task Status Overview
+
+| Task ID | Task Name                                   | Status |
+|--------:|---------------------------------------------|--------|
+| LEO Activation – 01 | Khởi tạo Database & Extensions           | 🟩 Done |
+| LEO Activation – 02 | Worker Đồng bộ Dữ liệu                   | 🟦 In Progress |
+| LEO Activation – 03 | Segment Snapshot Engine                  | ⬜ Todo |
+| LEO Activation – 04 | FunctionGemma Model Service              | 🟦 In Progress |
+| LEO Activation – 05 | Agent Task Orchestrator                  | ⬜ Todo |
+| LEO Activation – 06 | Unified Dispatcher & Delivery Log        | ⬜ Todo |
+| LEO Activation – 07 | Channel Adapter: Zalo OA & Email         | 🟦 In Progress |
+| LEO Activation – 08 | Channel Adapter: Facebook Page           | ⬜ Todo |
+| LEO Activation – 09 | Channel Adapter: Push & Telegram         | ⬜ Todo |
+| LEO Activation – 10 | End-to-End Traceability Test             | ⬜ Todo |
+| LEO Activation – 11 | Load Testing & Documentation             | ⬜ Todo |
+
+<!--
+Speaker Notes:
+Đây là slide kiểm soát sprint, không phải slide trình diễn.
+Chỉ dùng 4 trạng thái: ⬜ Todo 🟦 In Progress 🟨 Blocked 🟩 Done
+Nếu Task bị Blocked, phải nói rõ block bởi gì trong daily.
+Slide này phải được update mỗi ngày
+-->
