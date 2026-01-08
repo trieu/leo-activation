@@ -10,6 +10,8 @@ from email.utils import formataddr
 from agentic_tools.channels.activation import NotificationChannel
 from main_configs import MarketingConfigs
 
+from data_workers.database import get_arango_db  # Import your connection function
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +45,13 @@ class EmailChannel(NotificationChannel):
 
     def __init__(self):
         self.provider = MarketingConfigs.EMAIL_PROVIDER or "smtp"
+
+        # -------- Database Connection --------
+        try:
+            self.db = get_arango_db()
+        except Exception as e:
+            logger.error(f"[EmailChannel] Failed to connect to ArangoDB on init: {e}")
+            self.db = None
 
         # -------- Brevo --------
         self.brevo_api_key = MarketingConfigs.BREVO_API_KEY
@@ -289,11 +298,16 @@ class EmailChannel(NotificationChannel):
         if "recipients" in kwargs:
             recipients = kwargs["recipients"]
         else:
-            # TODO: Replace with real segment → email resolution
-            recipients = [
-                "tantrieuf31.database@gmail.com",
-                "tantrieuf31@gmail.com",
-            ]
+            recipients = self._get_recipients_from_arango(recipient_segment)
+            
+            # If no recipients found in DB, abort gracefully
+            if not recipients:
+                logger.warning(f"[Email] No recipients found for segment: {recipient_segment}. Aborting send.")
+                return {
+                    "status": "skipped",
+                    "reason": "no_recipients_found",
+                    "segment": recipient_segment
+                }
 
 
         subject = kwargs.get("subject") or "Notification"
@@ -308,6 +322,90 @@ class EmailChannel(NotificationChannel):
 
         # Default fallback
         return self.send_via_smtp(recipients, subject, message, timeout)
+    
+    # ============================================================
+    # Database Helpers
+    # ============================================================
+    def _get_recipients_from_arango(self, segment_name: str) -> List[str]:
+        """
+        Fetches email addresses by resolving Segment Name -> Segment ID -> Profiles.
+        Logs detailed Query, ID, and Name if execution fails or returns empty.
+        """
+        if not self.db:
+            logger.error("[EmailChannel] Database connection is not available.")
+            return []
+
+        target_segment_id = None
+        segment_query = ""
+        profile_query = ""
+
+        try:
+            # ---------------------------------------------------------
+            # STEP 1: Resolve Segment Name to Segment ID (_key)
+            # ---------------------------------------------------------
+            logger.info(f"[ArangoDB] Step 1: Searching for segment name '{segment_name}'...")
+            
+            segment_query = """
+            FOR s IN cdp_segment
+                FILTER s.name == @segment_name
+                RETURN s._key
+            """
+            
+            # Execute Segment Lookup
+            cursor_seg = self.db.aql.execute(segment_query, bind_vars={'segment_name': segment_name})
+            found_segment_ids = [s_id for s_id in cursor_seg]
+
+            if not found_segment_ids:
+                logger.warning(
+                    f"\n[ArangoDB] ❌ Segment NOT found.\n"
+                    f"   - Name: '{segment_name}'\n"
+                    f"   - Query Used:\n{segment_query}"
+                )
+                return []
+            
+            # Take the first match
+            target_segment_id = found_segment_ids[0]
+            logger.info(f"[ArangoDB] ✅ Found Segment ID: {target_segment_id}")
+
+            # ---------------------------------------------------------
+            # STEP 2: Fetch Profiles using the Resolved Segment ID
+            # ---------------------------------------------------------
+            logger.info(f"[ArangoDB] Step 2: Fetching profiles for ID {target_segment_id}...")
+
+            profile_query = """
+            FOR p IN cdp_profile
+                FILTER @segment_id IN p.inSegments[*].id
+                FILTER p.primaryEmail != null AND p.primaryEmail != ""
+                RETURN DISTINCT p.primaryEmail
+            """
+            
+            # Execute Profile Lookup
+            cursor_prof = self.db.aql.execute(profile_query, bind_vars={'segment_id': target_segment_id})
+            emails = [email for email in cursor_prof]
+            
+            if len(emails) == 0:
+                logger.warning(
+                    f"\n[ArangoDB] ⚠️ Segment exists but contains NO valid emails.\n"
+                    f"   - Name: '{segment_name}'\n"
+                    f"   - ID: {target_segment_id}\n"
+                    f"   - Query Used:\n{profile_query}"
+                )
+            else:
+                logger.info(f"[ArangoDB] ✅ Success: Found {len(emails)} emails for '{segment_name}' ({target_segment_id}).")
+
+            return emails
+
+        except Exception as e:
+            # Determine which step failed to log the relevant query
+            failed_query = profile_query if target_segment_id else segment_query
+            
+            logger.error(
+                f"\n[ArangoDB] 🔥 CRITICAL AQL ERROR: {e}\n"
+                f"   - Name: '{segment_name}'\n"
+                f"   - ID Resolved: {target_segment_id}\n"
+                f"   - Failed Query:\n{failed_query}"
+            )
+            return []
 
 # ============================================================
 # End Email Channel Class
