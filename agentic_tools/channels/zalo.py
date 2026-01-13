@@ -59,7 +59,6 @@ class ZaloOAChannel(NotificationChannel):
 
             # Construct Payload
             # NOTE: Ensure keys like 'customer_name' match your ZNS Template exactly!
-
             # 1. Generate a random 6-digit OTP
             generated_otp = str(random.randint(100000, 999999))
 
@@ -77,12 +76,10 @@ class ZaloOAChannel(NotificationChannel):
             # 3. Send
             success, error_code, result_msg = self._execute_zns_call(payload)
 
-            # Send (No Retry Logic)
-            # success, error_code, result_msg = self._execute_zns_call(payload)
-
             if success:
                 stats["sent"] += 1
-                self._save_verified_phone(phone, name, result_msg)
+                # NOTE: In real mode, consider saving verified phones
+                # self._save_verified_phone(phone, name, result_msg)
             else:
                 stats["failed"] += 1
                 if error_code == -124:
@@ -95,68 +92,6 @@ class ZaloOAChannel(NotificationChannel):
             "details": f"Test run complete for {len(recipients)} users.", 
             "stats": stats
         }
-    
-
-    # def send(self, recipient_segment: str, message: str = None, **kwargs):
-    #     """
-    #     Main Execution Flow
-    #     """
-    #     # 1. Fetch Recipients
-    #     recipients = get_emails_from_arango(self.db, recipient_segment)
-    #     if not recipients:
-    #         return {"status": "warning", "message": f"No profiles found in '{recipient_segment}'"}
-
-    #     stats = {"sent": 0, "failed": 0, "invalid_phone": 0, "user_unavailable": 0}
-
-    #     for p in recipients:
-    #         original_phone = p.get('phone')
-    #         phone = self._format_phone_for_zalo(original_phone)
-    #         name = p.get('firstName', 'Customer')
-
-    #         if not phone:
-    #             stats["invalid_phone"] += 1
-    #             continue
-
-    #         payload = {
-    #             "phone": phone,
-    #             "template_id": self.template_id,
-    #             "template_data": {
-    #                 "customer_name": name,
-    #                 # "message_content": message # Only if your template supports this param
-    #             },
-    #             "tracking_id": f"track_{int(time.time())}_{phone}"
-    #         }
-
-    #         # Attempt 1
-    #         success, error_code, result_msg = self._execute_zns_call(payload)
-
-    #         # Retry Logic (Only for Token Expiry)
-    #         # if not success and error_code == -124:
-    #         #     if self._refresh_access_token():
-    #         #         # Attempt 2 (New Token)
-    #         #         success, error_code, result_msg = self._execute_zns_call(payload)
-
-    #         # Final Status Handling
-    #         if success:
-    #             stats["sent"] += 1
-    #             # ✅ NEW: Save to Verified Collection
-    #             self._save_verified_phone(phone, name, result_msg)
-    #         else:
-    #             stats["failed"] += 1
-    #             if error_code == -108:
-    #                 stats["invalid_phone"] += 1
-    #                 logger.warning(f"[Zalo] Invalid Phone: {phone}")
-    #             elif error_code in [-114, -118, -119]:
-    #                 stats["user_unavailable"] += 1 # User blocked OA or not on Zalo
-    #                 logger.warning(f"[Zalo] User Unavailable ({error_code}): {phone}")
-    #             else:
-    #                 logger.error(f"[Zalo] Error {error_code}: {result_msg} | Phone: {phone}")
-
-    #     return {
-    #         "status": "success", 
-    #         "details": f"Processed {len(recipients)} users.", 
-    #         "stats": stats
-    #     }
     
 
     def _format_phone_for_zalo(self, phone: str) -> Optional[str]:
