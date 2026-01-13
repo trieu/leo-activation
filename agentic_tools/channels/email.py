@@ -12,9 +12,9 @@ from main_configs import MarketingConfigs
 
 from data_workers.database import get_arango_db  # Import your connection function
 
-from helpers import (
+from agentic_tools.channels.helpers import (
     get_recipients_from_arango,
-    render_template,
+    render_email_template,
     PRODUCT_RECOMMENDATION_TEMPLATE
 )
 
@@ -298,7 +298,7 @@ class EmailChannel(NotificationChannel):
             email = user.get("email")
             
             # Render unique body for this user
-            personalized_body = self.render_template(html_content, user)
+            personalized_body = render_email_template(html_content, user)
             
             # Send logic
             try:

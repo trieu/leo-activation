@@ -116,6 +116,49 @@ def get_recipients_from_arango(db_connection: Any, segment_name: str) -> List[Di
         logger.error(f"[ArangoDB] Query failed: {e}")
         return []
 
+def get_emails_from_arango(db_connection: Any, segment_name: str) -> List[Dict[str, str]]:
+    """
+    Fetches a list of profiles belonging to a specific segment.
+    Returns: [{'phone': '...', 'firstName': '...'}, ...]
+    """
+    if not db_connection:
+        logger.error("[EmailHelper] Database connection is not available.")
+        return []
+
+    try:
+        # 1. Resolve Segment Name to ID
+        segment_query = "FOR s IN cdp_segment FILTER s.name == @segment_name RETURN s._key"
+        cursor_seg = db_connection.aql.execute(segment_query, bind_vars={'segment_name': segment_name})
+        found_ids = [s for s in cursor_seg]
+
+        if not found_ids:
+            logger.warning(f"[ArangoDB] Segment '{segment_name}' not found.")
+            return []
+        
+        target_segment_id = found_ids[0]
+        logger.info(f"[ArangoDB] Resolving recipients for Segment ID: {target_segment_id}")
+
+        # 2. Fetch Profile Data (Email + First Name)
+        profile_query = """
+        FOR p IN cdp_profile
+            FILTER @segment_id IN p.inSegments[*].id
+            FILTER p.primaryPhone != null AND p.primaryPhone != ""
+            RETURN {
+                "phone": p.primaryPhone,
+                "firstName": p.firstName
+            }
+        """
+        
+        cursor_prof = db_connection.aql.execute(profile_query, bind_vars={'segment_id': target_segment_id})
+        recipients = [r for r in cursor_prof]
+        
+        logger.info(f"[ArangoDB] Found {len(recipients)} profiles for personalization.")
+        return recipients
+
+    except Exception as e:
+        logger.error(f"[ArangoDB] Query failed: {e}")
+        return []
+
 
 def render_email_template(html_template: str, profile_data: Dict[str, Any]) -> str:
     """

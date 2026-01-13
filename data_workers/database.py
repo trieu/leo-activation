@@ -18,9 +18,9 @@ def get_pg_connection():
 def get_arango_db():
     client = ArangoClient(hosts=os.getenv("ARANGO_HOST", "http://localhost:8529"))
     db = client.db(
-        os.getenv("ARANGO_DB", "_system"),
+        os.getenv("ARANGO_DB", "leo-activation"),
         username=os.getenv("ARANGO_USER", "root"),
-        password=os.getenv("ARANGO_PASSWORD", "")
+        password=os.getenv("ARANGO_PASSWORD", "rootpassword")
     )
 
     # ✅ ADD THIS CHECK
