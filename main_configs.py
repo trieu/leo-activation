@@ -110,8 +110,12 @@ class MarketingConfigs:
     # --------------------------------------------------------
     # Zalo Official Account
     # --------------------------------------------------------
+    ZALO_APP_ID: Optional[str] = os.getenv("ZALO_APP_ID")
+    ZALO_APP_SECRET: Optional[str] = os.getenv("ZALO_APP_SECRET")
     ZALO_OA_API_URL: Optional[str] = os.getenv("ZALO_OA_API_URL")
     ZALO_OA_TOKEN: Optional[str] = os.getenv("ZALO_OA_TOKEN")
+    ZALO_ZNS_TEMPLATE_ID: Optional[str] = os.getenv("ZALO_ZNS_TEMPLATE_ID")
+    ZALO_OA_REFRESH_TOKEN: Optional[str] = os.getenv("ZALO_OA_REFRESH_TOKEN")
 
     try:
         ZALO_OA_MAX_RETRIES: int = int(os.getenv("ZALO_OA_MAX_RETRIES", "1"))

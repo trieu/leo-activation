@@ -10,6 +10,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+
+# Import your new Zalo Channel
+from agentic_tools.channels.zalo import ZaloOAChannel
+
 # ============================================================
 # Domain Imports
 # ============================================================
@@ -171,6 +179,38 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     return app
+
+# Define the request body schema
+class ZaloTestRequest(BaseModel):
+    segment_name: str
+    message: Optional[str] = None
+    kwargs: Optional[Dict[str, Any]] = {} 
+
+test_router = APIRouter()
+
+@test_router.post("/test/zalo-direct")
+async def test_zalo_direct(request: ZaloTestRequest):
+    """
+    Directly calls the Zalo channel with full parameter support.
+    """
+    try:
+        zalo_channel = ZaloOAChannel()
+        
+        # ✅ UPDATED: Passing **request.kwargs to the send function
+        result = zalo_channel.send(
+            recipient_segment=request.segment_name, 
+            message=request.message,
+            **request.kwargs 
+        )
+        
+        return {
+            "status": "completed",
+            "mode": "direct_test",
+            "channel_response": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================

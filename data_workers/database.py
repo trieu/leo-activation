@@ -18,8 +18,14 @@ def get_pg_connection():
 def get_arango_db():
     client = ArangoClient(hosts=os.getenv("ARANGO_HOST", "http://localhost:8529"))
     db = client.db(
-        os.getenv("ARANGO_DB", "leo_cdp_source"),
+        os.getenv("ARANGO_DB", "leo-activation"),
         username=os.getenv("ARANGO_USER", "root"),
-        password=os.getenv("ARANGO_PASSWORD", "")
+        password=os.getenv("ARANGO_PASSWORD", "rootpassword")
     )
+
+    # ✅ ADD THIS CHECK
+    print(f"🔌 Connected to Database: {db.name}")
+
+    if db.name != "leo_cdp_source":
+        print(f"⚠️ WARNING: You are NOT using 'leo_cdp_source'. You are using '{db.name}'")
     return db

@@ -1,6 +1,3 @@
-
-
-
 import json
 from typing import Any, Dict, List, Optional
 
@@ -12,18 +9,37 @@ def build_messages(prompt):
         {
             "role": "system",
             "content": (
-                "You are LEO, a smart model that can do function calling with tools."
-                "Use tools immediately when applicable. "
-                "Do not ask for confirmation if parameters are clear. "
-                "Explain errors plainly."
+                "You are LEO, an expert CDP assistant. "
+                "Select the correct tool based on the user's intent.\n"
+                "CRITICAL INSTRUCTION: You must include a 'Thought:' line before every tool call.\n"
+                "\n"
+                "EXAMPLES:\n"
+                # Example 1: No Tool
+                "User: 'Hi there'\n"
+                "Thought: This is a greeting. No specific tool is required.\n"
+                "Tool: None\n\n"
+                
+                # Example 2: Activation (Complex)
+                "User: 'Sync the VIP segment to Facebook Ads'\n"
+                "Thought: The user wants to activate a specific customer segment on an external channel.\n"
+                "Tool: activate_channel(segment='VIP', channel='facebook_ads')\n\n"
+                
+                # Example 3: Weather (The Fix)
+                "User: 'Is it raining in Hanoi?'\n"
+                "Thought: The user is asking for current weather conditions in a specific city. I should use the weather tool, not the date tool.\n"
+                "Tool: get_current_weather(location='Hanoi')\n\n"
+                
+                # Example 4: Date (Differentiation)
+                "User: 'What day is it?'\n"
+                "Thought: The user is explicitly asking for the current date.\n"
+                "Tool: get_date()"
             ),
         },
         {
             "role": "user",
-            "content":  prompt,
+            "content": prompt
         },
     ]
-    
     return messages
 
 class AgentRouter:
@@ -79,13 +95,18 @@ class AgentRouter:
 
         # 1. Intent detection via FunctionGemma
         raw_output = self.gemma.generate(messages, tools)
+        print("Raw output from FunctionGemma: ", raw_output)
+
+        # Extract tool calls from FunctionGemma's output
         tool_calls = self.gemma.extract_tool_calls(raw_output) or []
+        print("Extracted tool calls: ", tool_calls)
 
         debug_calls = []
         debug_results = []
 
         # 2. No tools -> semantic reply via Gemini
         if not tool_calls:
+            print("No tool calls detected, using Gemini for direct answer.")
             answer = self.gemini.generate(messages, tools)
             return {"answer": answer, "debug": {"calls": [], "data": []}}
 
@@ -95,6 +116,8 @@ class AgentRouter:
             "content": None,
             "tool_calls": [{"type": "function", "function": call} for call in tool_calls],
         })
+        print("Messages before tool execution: ", messages)
+
 
         tool_outputs_for_llm = []
 

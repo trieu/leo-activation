@@ -10,6 +10,14 @@ from email.utils import formataddr
 from agentic_tools.channels.activation import NotificationChannel
 from main_configs import MarketingConfigs
 
+from data_workers.database import get_arango_db  # Import your connection function
+
+from agentic_tools.channels.helpers import (
+    get_recipients_from_arango,
+    render_email_template,
+    PRODUCT_RECOMMENDATION_TEMPLATE
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +51,13 @@ class EmailChannel(NotificationChannel):
 
     def __init__(self):
         self.provider = MarketingConfigs.EMAIL_PROVIDER or "smtp"
+
+        # -------- Database Connection --------
+        try:
+            self.db = get_arango_db()
+        except Exception as e:
+            logger.error(f"[EmailChannel] Failed to connect to ArangoDB on init: {e}")
+            self.db = None
 
         # -------- Brevo --------
         self.brevo_api_key = MarketingConfigs.BREVO_API_KEY
@@ -214,100 +229,104 @@ class EmailChannel(NotificationChannel):
     # ============================================================
     # SMTP
     # ============================================================
-
-    def send_via_smtp(
-        self,
-        recipients: List[str],
-        subject: str,
-        body: str,
-        timeout: int = 10,
-    ) -> Dict[str, Any]:
+    def send_via_smtp(self, recipients: List[str], subject: str, body: str, timeout: int = 10) -> Dict[str, Any]:
         if not self.smtp_username or not self.smtp_password:
-            return {"status": "error", "provider": "smtp", "message": "SMTP credentials not set"}
+             return {"status": "error", "message": "SMTP credentials missing"}
 
         msg = EmailMessage()
         msg["Subject"] = subject
-        msg["To"] = ", ".join(recipients)
+        msg["To"] = ", ".join(recipients) 
         msg["From"] = formataddr(("Notification", self.smtp_username))
-        msg.set_content(body)
+        
+        # ✅ CRITICAL FIX: Explicitly set content type to HTML
+        msg.set_content(body, subtype='html') 
 
         ctx = ssl.create_default_context()
-
         try:
             with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=timeout) as server:
                 server.ehlo()
                 if self.smtp_use_tls:
                     server.starttls(context=ctx)
                     server.ehlo()
-
                 server.login(self.smtp_username, self.smtp_password)
                 server.send_message(msg)
-
-            return {
-                "status": "success",
-                "channel": "email",
-                "provider": "smtp",
-                "sent_to": recipients,
-            }
-
-        except smtplib.SMTPAuthenticationError:
-            return {
-                "status": "error",
-                "provider": "smtp",
-                "message": "SMTP authentication failed",
-            }
-
-        except Exception as exc:
-            logger.error("SMTP send failed: %s", exc)
-            return {
-                "status": "error",
-                "provider": "smtp",
-                "message": str(exc),
-            }
+            return {"status": "success", "sent_to": recipients}
+        except Exception as e:
+            logger.error(f"SMTP Error: {e}")
+            return {"status": "error", "message": str(e)}
 
     # ============================================================
-    # Public Entry Point
+    # 4. Main Send Logic (The Orchestrator)
     # ============================================================
-
-    def send(self, recipient_segment: str, message: str, **kwargs: Any) -> Dict[str, Any]:
-        """_summary_
-
-        Args:
-            recipient_segment (str): the recipient segment identifier
-            message (str): the message body of the email
-            **kwargs: additional parameters:
-              - recipients: List[str] - explicit list of recipient emails
-              - subject: str - email subject
-              - timeout: int - request timeout in seconds
-              - provider: str - 'brevo', 'sendgrid', or 'smtp' to override default provider
-
-        Returns:
-            Dict[str, Any]: result dict
+    def send(self, recipient_segment: str, message: str = None, **kwargs: Any) -> Dict[str, Any]:
         """
-        logger.info("[Email] Segment=%s | kwargs=%s", recipient_segment, kwargs)
+        Orchestrates sending. 
+        If 'message' is not provided, defaults to the PRODUCT_RECOMMENDATION_TEMPLATE.
+        Performes 1-to-1 sending if personalization tokens are detected.
+        """
+        logger.info("[Email] Starting send process for Segment: %s", recipient_segment)
 
-        if "recipients" in kwargs:
-            recipients = kwargs["recipients"]
+        if message and message.strip():
+            html_content = message
+            logger.info("Using custom message provided in arguments (Template ignored).")
         else:
-            # TODO: Replace with real segment → email resolution
-            recipients = [
-                "tantrieuf31.database@gmail.com",
-                "tantrieuf31@gmail.com",
-            ]
+            html_content = PRODUCT_RECOMMENDATION_TEMPLATE
+            logger.info("Using Default Product Recommendation Template.")
 
-
-        subject = kwargs.get("subject") or "Notification"
-        timeout = kwargs.get("timeout", 8)
+        # 1. Determine Content
+        # If user passed a message, use it. Otherwise use the default HTML template.
+        subject = kwargs.get("subject") or "Special Offer for You"
+        timeout = kwargs.get("timeout", 10)
         provider = kwargs.get("provider", self.provider).lower()
 
-        if provider == "brevo":
-            return self.send_via_brevo_api(recipients, subject, message, timeout)
+        # 2. Fetch Recipients Data (List of Dicts)
+        # We need the full object {email, firstName}, not just strings.
+        recipient_objects = get_recipients_from_arango(self.db_connection, recipient_segment)
+        
+        if not recipient_objects:
+            logger.warning("[Email] No recipients found. Aborting.")
+            return {"status": "skipped", "reason": "no_recipients"}
 
-        if provider == "sendgrid":
-            return self.send_via_sendgrid_api(recipients, subject, message, timeout)
+        # 3. Personalization Loop
+        # Since the template has {{profile.firstName}}, we must send emails individually.
+        success_count = 0
+        fail_count = 0
 
-        # Default fallback
-        return self.send_via_smtp(recipients, subject, message, timeout)
+        logger.info(f"[Email] Sending {len(recipient_objects)} individual emails via {provider}...")
+
+        for user in recipient_objects:
+            email = user.get("email")
+            
+            # Render unique body for this user
+            personalized_body = render_email_template(html_content, user)
+            
+            # Send logic
+            try:
+                if provider == "brevo":
+                    res = self.send_via_brevo_api([email], subject, personalized_body, timeout)
+                elif provider == "sendgrid":
+                    res = self.send_via_sendgrid_api([email], subject, personalized_body, timeout)
+                else:
+                    # SMTP default
+                    res = self.send_via_smtp([email], subject, personalized_body, timeout)
+
+                if res.get("status") == "success":
+                    success_count += 1
+                else:
+                    fail_count += 1
+                    
+            except Exception as e:
+                logger.error(f"Failed to send to {email}: {e}")
+                fail_count += 1
+
+        # 4. Final Report
+        return {
+            "status": "completed",
+            "segment": recipient_segment,
+            "total_attempted": len(recipient_objects),
+            "success": success_count,
+            "failed": fail_count
+        }
 
 # ============================================================
 # End Email Channel Class
