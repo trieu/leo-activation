@@ -5,12 +5,13 @@ import redis
 from celery import shared_task
 from data_workers.database import get_pg_connection, get_arango_db
 import os
+from main_configs import CELERY_REDIS_URL
 
 # Setup Logger
 logger = logging.getLogger(__name__)
 
 # Redis for storing the "Last Sync Timestamp" state
-redis_client = redis.from_url(os.getenv("REDIS_URL"))
+redis_client = redis.from_url(CELERY_REDIS_URL)
 LAST_SYNC_KEY = "leo_cdp:last_sync_time"
 DEFAULT_TENANT_ID = os.getenv("DEFAULT_TENANT_ID")
 
