@@ -229,6 +229,9 @@ ARANGO_PASSWORD=your_arango_password
 # Redis (Broker & Result Backend)
 REDIS_URL=redis://localhost:6379/0
 
+# Celery specific Redis URL
+CELERY_REDIS_URL=redis://localhost:6379/1
+
 # Sync Settings
 DEFAULT_TENANT_ID=00000000-0000-0000-0000-000000000000
 

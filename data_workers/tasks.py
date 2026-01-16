@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 import redis
 from celery import shared_task
-from database import get_pg_connection, get_arango_db
+from data_workers.database import get_pg_connection, get_arango_db
 import os
 
 # Setup Logger

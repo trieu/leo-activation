@@ -163,3 +163,7 @@ GEMMA_FUNCTION_MODEL_ID: str = "google/functiongemma-270m-it"
 # Hugging Face access token
 # Required when loading private models or avoiding rate limits
 HUGGINGFACE_TOKEN: str = os.getenv("HUGGINGFACE_TOKEN")
+
+# Default Redis Configuration for caching and state management
+REDIS_URL: Optional[str] = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+CELERY_REDIS_URL: Optional[str] = os.getenv("CELERY_REDIS_URL", "redis://localhost:6379/1")

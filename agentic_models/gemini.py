@@ -10,7 +10,7 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
-from main_configs import GEMINI_MODEL_ID, GEMINI_API_KEY
+from main_configs import GEMINI_MODEL_ID, GEMINI_API_KEY, REDIS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +35,14 @@ class GeminiEngine:
         self._cached_tool_calls: List[Dict] = []
 
         # Initialize Redis
-        redis_url = os.getenv("REDIS_URL")
+
         self.redis_client = None
-        if redis_url:
-            try:
-                self.redis_client = redis.from_url(redis_url)
-                # Test connection lightly
-                self.redis_client.ping()
-            except Exception as e:
-                logger.warning(f"Redis connection failed. Caching disabled. Error: {e}")
+        try:
+            self.redis_client = redis.from_url(REDIS_URL)
+            # Test connection lightly
+            self.redis_client.ping()
+        except Exception as e:
+            logger.warning(f"Redis connection failed. Caching disabled. Error: {e}")
 
     # ============================================================
     # Caching Helpers
