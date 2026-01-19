@@ -61,7 +61,7 @@ def create_app() -> FastAPI:
     # --------------------
     base_dir = Path(__file__).resolve().parent.parent
     resources_dir = base_dir / "agentic_resources"
-    templates_dir = resources_dir / "templates"
+    templates_dir = resources_dir / "web_templates"
 
     if resources_dir.exists():
         app.mount(

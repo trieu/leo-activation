@@ -14,8 +14,28 @@ from main_configs import GEMINI_MODEL_ID, GEMINI_API_KEY, REDIS_URL
 
 logger = logging.getLogger(__name__)
 
-# Cache Expiration in seconds (e.g., 1 hour). Adjust as needed.
-CACHE_TTL = 3600 
+CACHE_TTL = 3600
+
+# ============================================================
+# NEW: Enhanced System Instruction for Insights & Natural Language
+# ============================================================
+DEFAULT_SYSTEM_INSTRUCTION = """
+You are LEO, an expert Customer Data Platform (CDP) Analyst.
+
+### YOUR GOAL:
+Provide natural, human-readable responses rich with actionable insights. Never just dump raw JSON or data.
+
+### RULES FOR HANDLING TOOL RESULTS:
+1. **Analyze, Don't Just Report:** When a tool returns data, you must interpret it.
+   - *Bad:* "The user count is 5,000."
+   - *Good:* "We found 5,000 active users in this segment, which represents a significant audience for your next campaign."
+2. **Provide Context:** Explain *why* the data matters or what the user should do next.
+3. **Format for Clarity:** Use Markdown (bullet points, **bold text**) to make the insights scannable and easy to read.
+4. **Natural Tone:** Speak professionally but conversationally. Avoid robotic phrases like "Here is the output."
+
+### FALLBACK:
+If a tool returns empty data or an error, explain what happened in plain English and suggest a specific next step to fix it.
+"""
 
 class GeminiEngine:
     def __init__(
@@ -29,18 +49,18 @@ class GeminiEngine:
         self.model_name = model_name
         self.client = genai.Client(api_key=api_key)
         
-        # State to hold the last live API response
         self._last_response = None
-        # State to hold cached tool calls (if we hit Redis)
         self._cached_tool_calls: List[Dict] = []
 
         # Initialize Redis
-
         self.redis_client = None
         try:
-            self.redis_client = redis.from_url(REDIS_URL)
-            # Test connection lightly
-            self.redis_client.ping()
+            # Safely handle potential None/Empty REDIS_URL
+            if REDIS_URL:
+                self.redis_client = redis.from_url(REDIS_URL)
+                self.redis_client.ping()
+            else:
+                logger.warning("REDIS_URL is not set. Caching is disabled.")
         except Exception as e:
             logger.warning(f"Redis connection failed. Caching disabled. Error: {e}")
 
@@ -48,23 +68,17 @@ class GeminiEngine:
     # Caching Helpers
     # ============================================================
     def _generate_cache_key(self, messages: List[Dict], tools: Optional[List]) -> str:
-        """
-        Generates a deterministic SHA256 hash based on inputs.
-        """
-        # specialized serializer for tools (which might be functions)
         def default_serializer(obj):
             if hasattr(obj, '__name__'):
                 return f"func:{obj.__name__}"
             return str(obj)
 
-        # Create a unique signature structure
         payload = {
             "model": self.model_name,
             "messages": messages,
             "tools": tools
         }
-        
-        # Dump to JSON string with sorted keys for consistency
+        # Sort keys to ensure consistent hashing
         payload_str = json.dumps(payload, sort_keys=True, default=default_serializer)
         return hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
 
@@ -83,6 +97,7 @@ class GeminiEngine:
         if not self.redis_client:
             return
         try:
+            # We cache both text and tool calls to restore complete state
             data = {
                 "text": text,
                 "tool_calls": tool_calls
@@ -92,9 +107,10 @@ class GeminiEngine:
             logger.error(f"Redis write error: {e}")
 
     # ============================================================
-    # Internal Logic (Parsing)
+    # Parsing & Conversion
     # ============================================================
     def _parse_custom_tool_call(self, text_content: str) -> Optional[types.Part]:
+        """Parses your custom <start_function_call> string format."""
         pattern = r"<start_function_call>call:(?P<name>[\w_]+)\{(?P<args>.*)\}<end_function_call>"
         match = re.search(pattern, text_content)
         
@@ -108,20 +124,23 @@ class GeminiEngine:
                     val = val.replace("<escape>", "").strip()
                     args_dict = {key.strip(): val}
                 except Exception:
-                    pass # Fallback if parsing fails
+                    pass 
             
             return types.Part.from_function_call(name=fn_name, args=args_dict)
         return None
 
     def _convert_messages(self, messages: List[Dict[str, Any]]) -> tuple[List[types.Content], Optional[str]]:
         contents: List[types.Content] = []
-        system_parts: List[str] = []
+        
+        # Start with the DEFAULT instruction to ensure insights/persona
+        system_parts: List[str] = [DEFAULT_SYSTEM_INSTRUCTION]
 
         for m in messages:
             role = m.get("role")
             content_str = (m.get("content") or "").strip()
 
             if role == "system":
+                # Append user-specific system prompts (e.g., current date, specific task)
                 system_parts.append(content_str)
                 continue
 
@@ -150,7 +169,10 @@ class GeminiEngine:
             if content_str:
                 contents.append(types.Content(role="user", parts=[types.Part.from_text(text=content_str)]))
 
-        return contents, ("\n\n".join(system_parts) if system_parts else None)
+        # Join all system parts into one comprehensive instruction block
+        full_system_instruction = "\n\n".join(system_parts) if system_parts else None
+        
+        return contents, full_system_instruction
 
     # ============================================================
     # Main Generation
@@ -166,19 +188,19 @@ class GeminiEngine:
         cached_result = self._get_from_cache(cache_key)
 
         if cached_result:
-            logger.info("⚡ Gemini Cache Hit")
-            # Restore state so extract_tool_calls works
+            logger.info("⚡ Gemini Cache Hit ✅")
             self._last_response = None 
             self._cached_tool_calls = cached_result.get("tool_calls", [])
             return cached_result.get("text", "")
 
-        # 2. Prepare API Call
-        print("\n--- Gemini Generation Call (Live) ---")
-        self._cached_tool_calls = [] # Reset cache state
+        # 2. Prepare Live Call
+        print("\n--- ✅ Gemini Generation Call (Live) ---")
+        self._cached_tool_calls = [] 
         
         contents, system_instruction = self._convert_messages(messages)
+        
         config = types.GenerateContentConfig(
-            temperature=0.4,
+            temperature=0.4, # Keep low for accuracy, System Instruction adds the "flair"
             tools=tools or None,
             system_instruction=system_instruction
         )
@@ -191,38 +213,39 @@ class GeminiEngine:
                 config=config,
             )
 
-            # 4. Extract Results
+            # 4. Extract Results (Text AND Tools)
             text_result = ""
             current_tool_calls = []
 
-            # Handle candidates
             if self._last_response.candidates:
-                # Try to get text
+                # Extract text if it exists (even if there are tool calls)
                 try:
                     text_result = (self._last_response.text or "").strip()
                 except ValueError:
-                    text_result = "" # No text, purely function call
+                    # API raises ValueError if accessing .text on a pure function-call response
+                    text_result = "" 
                 
-                # Extract tool calls (for caching purposes)
+                # Extract tools
                 current_tool_calls = self._extract_tool_calls_from_response(self._last_response)
 
             # 5. Save to Cache
-            self._save_to_cache(cache_key, text_result, current_tool_calls)
+            # Only cache if we got a valid response (text or tools)
+            if text_result or current_tool_calls:
+                self._save_to_cache(cache_key, text_result, current_tool_calls)
 
             return text_result
 
         except APIError as e:
             logger.error("Gemini API error: %s", e)
-            return ""
+            return f"Error connecting to AI service: {e}"
         except Exception:
             logger.exception("Gemini unexpected failure")
-            return ""
+            return "An unexpected error occurred."
 
     # ============================================================
     # Tool Extraction
     # ============================================================
     def _extract_tool_calls_from_response(self, response) -> List[Dict[str, Any]]:
-        """Helper to parse a raw Gemini response object."""
         calls = []
         if not response or not response.candidates:
             return calls
@@ -239,15 +262,9 @@ class GeminiEngine:
         return calls
 
     def extract_tool_calls(self, text: str = "") -> List[Dict[str, Any]]:
-        """
-        Public method to get tool calls.
-        Works for both Live responses and Cached responses.
-        """
-        # If we have a cached result, use it
         if self._cached_tool_calls:
             return self._cached_tool_calls
             
-        # If we have a live response object, parse it
         if self._last_response:
             return self._extract_tool_calls_from_response(self._last_response)
             

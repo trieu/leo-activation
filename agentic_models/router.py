@@ -146,7 +146,11 @@ class AgentRouter:
         final_answer = (self.gemini.generate(messages, tools) or "").strip()
 
         print("\n✅ Execution Complete. Skipping final LLM synthesis.")
-        #final_answer = "### Tool Execution Report\n" + "\n".join(final_summary_lines)
+        
+        if len(final_answer) < 10:
+            # If the final answer is too short, we assume LLM synthesis failed
+            # Instead, we build a simple report of tool executions
+            final_answer = "### Tool Execution Report\n" + "\n".join(final_summary_lines)
 
         return {
             "answer": final_answer,

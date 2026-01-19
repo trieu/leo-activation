@@ -1,8 +1,6 @@
-
 import logging
-
-
-from typing import Dict, Any, Type, Optional, List
+import re
+from typing import Dict, Any, Type, Optional, List, Literal
 
 from agentic_tools.channels.activation import NotificationChannel
 from agentic_tools.channels.facebook import FacebookPageChannel
@@ -10,15 +8,10 @@ from agentic_tools.channels.push_notification import MobilePushChannel, WebPushC
 from agentic_tools.channels.zalo import ZaloOAChannel
 from agentic_tools.channels.email import EmailChannel
 
-# =====================================================
-#  ACTIVATION CHANNELS
-# =====================================================
-
 logger = logging.getLogger("agentic_tools.marketing")
 
-
 # ============================================================
-# Global Channel Registry (single source of truth)
+# Global Channel Registry
 # ============================================================
 
 CHANNEL_REGISTRY: Dict[str, Type[NotificationChannel]] = {
@@ -29,73 +22,49 @@ CHANNEL_REGISTRY: Dict[str, Type[NotificationChannel]] = {
     "facebook_page": FacebookPageChannel,
 }
 
-# Channel alias map to support short names and common variants
+# Mapping of all possible user inputs to the canonical keys above
 CHANNEL_ALIASES = {
-    # Zalo variants
-    "zalo": "zalo_oa",
-    "zalo_oa": "zalo_oa",
-    "zalo_push": "zalo_oa",
-    "zalooa": "zalo_oa",
-
-    # Facebook variants
-    "facebook": "facebook_page",
-    "facebook_page": "facebook_page",
-    "facebookpage": "facebook_page",
-    "facebook_push": "facebook_page",
-    "fb": "facebook_page",
-    "fb_page": "facebook_page",
-
-    # Email variants
-    "email": "email",
-    "email_channel": "email",
-    
-    # Push Notification variants
-    "mobile_push": "mobile_push",
-    "mobile_notification": "mobile_push",
-    "web_push": "web_push",
-    "web_notification": "web_push",
+    "zalo": "zalo_oa", "zalo_oa": "zalo_oa", "zalo_push": "zalo_oa", "zalooa": "zalo_oa",
+    "facebook": "facebook_page", "facebook_page": "facebook_page", "facebookpage": "facebook_page", 
+    "fb": "facebook_page", "fb_page": "facebook_page",
+    "email": "email", "email_channel": "email",
+    "mobile_push": "mobile_push", "mobile_notification": "mobile_push",
+    "web_push": "web_push", "web_notification": "web_push",
 }
 
 def normalize_channel_key(key: str) -> str:
-    """Normalize incoming channel names to canonical keys.
-
-    Handles common variants with spaces, hyphens, and compact forms (e.g. "Zalo OA", "zalo-oa", "ZaloOA").
-    Returns either a canonical channel key (e.g. "zalo_oa"), or a normalized string the caller can use to look up mappings.
+    """
+    Normalizes human/LLM input into a canonical channel key.
+    Example: 'Zalo OA' -> 'zalo_oa'
     """
     if not key or not isinstance(key, str):
         return ""
+    
     raw = key.lower().strip()
+    
+    # 1. Direct Alias Check
+    if raw in CHANNEL_ALIASES:
+        resolved = CHANNEL_ALIASES[raw]
+        logger.debug("Channel normalization (alias): '%s' -> '%s'", key, resolved)
+        return resolved
 
-    # Direct alias mapping if present
-    mapped = CHANNEL_ALIASES.get(raw)
-    if mapped:
-        return mapped
-
-    # Try common variants
-    variants = {
+    # 2. Pattern Cleaning (Remove spaces/hyphens)
+    clean_variants = [
         raw.replace(" ", "_"),
-        raw.replace(" ", ""),
         raw.replace("-", "_"),
-        raw.replace("-", ""),
-        raw.replace(" ", "_").replace("-", "_"),
-    }
+        re.sub(r"[^a-z0-9]", "", raw) # Compact form: "zalooa"
+    ]
 
-    for v in variants:
-        mapped = CHANNEL_ALIASES.get(v)
-        if mapped:
-            return mapped
-        # If variant is itself a canonical channel key (e.g. "zalo_oa"), return it
-        if v in ActivationManager.list_channels():
+    for v in clean_variants:
+        if v in CHANNEL_ALIASES:
+            resolved = CHANNEL_ALIASES[v]
+            logger.debug("Channel normalization (fuzzy): '%s' -> '%s'", key, resolved)
+            return resolved
+        if v in CHANNEL_REGISTRY:
+            logger.debug("Channel normalization (clean): '%s' -> '%s'", key, v)
             return v
 
-    # Fallback: strip non-alphanumeric to compact form ("zalooa", "facebookpage")
-    import re
-    compact = re.sub(r"[^a-z0-9]", "", raw)
-    mapped = CHANNEL_ALIASES.get(compact)
-    if mapped:
-        return mapped
-
-    # Nothing matched — return the lowercased raw to let callers apply additional heuristics
+    logger.warning("Channel normalization failed for key: '%s'", key)
     return raw
 
 # ============================================================
@@ -103,27 +72,12 @@ def normalize_channel_key(key: str) -> str:
 # ============================================================
 
 class ActivationManager:
-    """
-    Factory + dispatcher for activation channels.
-
-    CHANNEL_REGISTRY is the canonical source.
-    This class provides orchestration, normalization, and execution.
-    """
+    """Factory for dispatching messages to various notification channels."""
 
     @classmethod
-    def register_channel(cls, key: str, channel_cls: Type[NotificationChannel]) -> None:
-        """
-        Register or override a channel handler by key.
-        Safe for tests and runtime extensions.
-        """
-        normalized = key.lower().strip()
-        CHANNEL_REGISTRY[normalized] = channel_cls
-        logger.debug("Registered channel '%s' -> %s", normalized, channel_cls)
-
-    @classmethod
-    def list_channels(cls) -> Dict[str, Type[NotificationChannel]]:
-        """Return a shallow copy of registered channels."""
-        return dict(CHANNEL_REGISTRY)
+    def list_channels(cls) -> List[str]:
+        """Returns list of canonical channel names."""
+        return list(CHANNEL_REGISTRY.keys())
 
     @classmethod
     def execute(
@@ -133,98 +87,108 @@ class ActivationManager:
         message: str,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        raw = (channel_key or "").lower().strip()
-
-        # 1️⃣ Normalize canonical key
-        resolved = normalize_channel_key(raw)
-
-        # 2️⃣ Alias fallback
-        if resolved not in CHANNEL_REGISTRY:
-            resolved = CHANNEL_ALIASES.get(raw, raw)
-
-        # 3️⃣ Heuristic suffix stripping
-        if resolved not in CHANNEL_REGISTRY:
-            for suffix in ("_push", "-push", " push", "_page", "-page", " page"):
-                if raw.endswith(suffix):
-                    candidate = raw[: -len(suffix)]
-                    resolved = CHANNEL_ALIASES.get(candidate, candidate)
-                    if resolved in CHANNEL_REGISTRY:
-                        break
-
-        # 4️⃣ Extra shorthand
-        if resolved not in CHANNEL_REGISTRY and raw == "fb":
-            resolved = CHANNEL_ALIASES.get("fb", "facebook_page")
+        # Normalize within execute to ensure internal calls are safe
+        resolved = normalize_channel_key(channel_key)
 
         if resolved not in CHANNEL_REGISTRY:
-            raise ValueError(f"Unsupported channel: {channel_key}")
+            error_msg = f"Unknown channel '{channel_key}'. Valid options: {cls.list_channels()}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
         channel_cls = CHANNEL_REGISTRY[resolved]
 
         try:
-            return channel_cls().send(
+            logger.debug("Initializing channel class: %s", channel_cls.__name__)
+            # Instance and send
+            response = channel_cls().send(
                 recipient_segment=segment,
                 message=message,
                 **kwargs,
             )
+            logger.info("Channel '%s' execution successful.", resolved)
+            return response
         except Exception as exc:
-            logger.exception("Channel '%s' execution failed", resolved)
+            logger.exception("Execution failed for channel: %s", resolved)
             return {
                 "status": "error",
                 "channel": resolved,
+                "error_type": exc.__class__.__name__,
                 "message": str(exc),
             }
-            
+
+# =====================================================
+# Tool Definition for Gemma / LLMs
 # =====================================================
 
-def activate_channel(channel: str, recipient_segment: str, message: str, title: str = "Notification", timeout: Optional[int] = 6, retries: Optional[int] = None, **kwargs: Any) -> Dict[str, Any]:
+def activate_channel(
+    channel: Literal["email", "zalo_oa", "mobile_push", "web_push", "facebook_page"], 
+    recipient_segment: str, 
+    message: str, 
+    title: str = "Notification", 
+    timeout: int = 6, 
+    retries: Optional[int] = 3, 
+    **kwargs: Any
+) -> Dict[str, Any]:
     """
-    LEO CDP activation tool for sending messages.
+    Activates a specific marketing channel to send a message to a target segment.
 
     Args:
-        channel: Channel type (email, zalo, mobile_push, or web_push).
-        recipient_segment: The target segment name or the ID for activation.
-        message: The content message to send.
-        title: Optional title for push notifications.
-        timeout: Optional timeout for network requests (in seconds).
-        retries: Optional number of retry attempts for network channels.
-        kwargs: Additional provider-specific keyword arguments forwarded to channel implementations (e.g. `provider`, `page_id`, `retries`).
+        channel: The delivery method. Must be one of 'email', 'zalo_oa', 'mobile_push', 'web_push', 'facebook_page'.
+        recipient_segment: The name or ID of the customer segment (e.g., 'VIP_Customers').
+        message: The actual text content to be sent.
+        title: The headline/title (primarily used for push notifications).
+        timeout: Maximum seconds to wait for the request to complete. Default is 6.
+        retries: Number of times to attempt re-sending if the first attempt fails.
+        kwargs: Specific provider settings like 'page_id', 'template_id', or 'image_url'.
 
     Returns:
-        A dict with at least a `status` key indicating success or failure, generated message, and other info.
+        A dictionary containing 'status' (success/error) and execution metadata.
     """
-    if not channel or not isinstance(channel, str):
-        return {"status": "error", "message": "`channel` must be a non-empty string"}
+    # 1. Start Logging
+    logger.info("Tool 'activate_channel' called. Channel: '%s', Segment: '%s'", channel, recipient_segment)
+    logger.debug("Tool 'activate_channel' params: title='%s', timeout=%s, retries=%s, kwargs=%s", title, timeout, retries, kwargs)
 
-    if not recipient_segment or not isinstance(recipient_segment, str):
-        return {"status": "error", "message": "`recipient_segment` must be a non-empty string"}
-
-    if not message or not isinstance(message, str):
-        return {"status": "error", "message": "`message` must be a non-empty string"}
-
-    # normalize channel (support alias and variants)
+    # 2. Validation for LLM-induced errors
+    if not channel:
+        err = "The 'channel' parameter is required."
+        logger.error(err)
+        return {"status": "error", "message": err}
+    
+    # 3. Normalization
     resolved = normalize_channel_key(channel)
+    if resolved not in ActivationManager.list_channels():
+         # Fail fast if normalization didn't find a registry match
+        err = f"Channel '{channel}' resolved to '{resolved}' which is not in registry."
+        logger.error(err)
+        return {
+            "status": "error", 
+            "message": f"Invalid channel '{channel}'. Valid options: {ActivationManager.list_channels()}"
+        }
 
-    # Verify supported channel
-    channels = ActivationManager.list_channels()
-    if resolved not in channels:
-        return {"status": "error", "message": f"Unsupported channel: {channel}", "available": list(channels.keys())}
-
-    logger.info("Activating channel '%s' (resolved '%s') for segment '%s'", channel, resolved, recipient_segment)
-
+    # 4. Execution
     try:
-        # Forward retries and any other provider-specific kwargs to the channel implementation
-        merged_kwargs = dict(kwargs)
-        merged_kwargs.setdefault("timeout", timeout)
-        if retries is not None:
-            merged_kwargs.setdefault("retries", retries)
-        merged_kwargs.setdefault("title", title)
+        # Prepare configuration
+        config = {
+            "title": title,
+            "timeout": timeout,
+            "retries": retries,
+            **kwargs
+        }
+        
+        logger.debug("Dispatching to ActivationManager with resolved channel: %s", resolved)
 
-        return ActivationManager.execute(
+        result = ActivationManager.execute(
             channel_key=resolved,
             segment=recipient_segment,
             message=message,
-            **merged_kwargs,
+            **config
         )
-    except Exception as exc:
-        logger.exception("activate_channel failed")
-        return {"status": "error", "message": str(exc)}
+        return result
+
+    except Exception as e:
+        logger.exception("Tool 'activate_channel' crashed unexpectedly.")
+        return {
+            "status": "error", 
+            "message": str(e),
+            "hint": f"Ensure channel is one of {ActivationManager.list_channels()}"
+        }

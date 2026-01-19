@@ -7,9 +7,10 @@ import random
 from typing import Dict, Any, Optional, Tuple
 
 from agentic_tools.channels.activation import NotificationChannel
+from data_workers.cdp_db_utils import get_user_contact_from_cdp
 from main_configs import MarketingConfigs
 
-from agentic_tools.channels.helpers import get_emails_from_arango
+
 from data_workers.database import get_arango_db
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class ZaloOAChannel(NotificationChannel):
         logger.info(f"[Zalo] Starting TEST MODE send to segment: {recipient_segment}")
         
         # 1. Fetch Recipients
-        recipients = get_emails_from_arango(self.db, recipient_segment)
+        recipients = get_user_contact_from_cdp(self.db, recipient_segment)
         if not recipients:
             return {"status": "warning", "message": f"No profiles found in '{recipient_segment}'"}
 

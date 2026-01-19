@@ -1,19 +1,32 @@
-
-
 from datetime import date, datetime
-from typing import Dict
+from typing import Dict, Optional
 
-
-def get_date(input_date: str = str(date.today())) -> Dict[str, str]:
+def get_date(input_date: Optional[str] = None) -> Dict[str, str]:
     """
-    Return current date/time and echo input date.
+    Retrieves the current server date and time.
+    
+    Use this tool when the user asks questions involving "today", "now", 
+    or requires the current date to calculate relative dates (e.g., "next Friday").
 
     Args:
-        input_date: The date string to process or echo.
+        input_date: An optional reference date string in 'YYYY-MM-DD' format. 
+            If not provided, the function defaults to the current date. 
+            Example: "2023-12-25"
+
+    Returns:
+        A dictionary containing current_date, timestamp, day_of_week, and resolved_date.
     """
-    now = datetime.now()
+    today_obj = date.today()
+    now_obj = datetime.now()
+    
+    today_str = str(today_obj)
+    
+    # Logic to handle the optional input
+    resolved_input = input_date if input_date else today_str
+
     return {
-        "current_date": str(date.today()),
-        "now": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "input_date": input_date,
+        "current_date": today_str,
+        "timestamp": now_obj.strftime("%Y-%m-%d %H:%M:%S"),
+        "day_of_week": now_obj.strftime("%A"),
+        "resolved_date": resolved_input,
     }

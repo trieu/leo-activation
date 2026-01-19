@@ -1,19 +1,22 @@
 -- ============================================================
 -- LEO Data Activation & Alert Center – Unified Database Schema
--- PostgreSQL 16+
--- Modules: CDP, Marketing Automation, News Alert Center
+-- Database: PostgreSQL 16+
 -- Architecture: Multi-tenant, Event-Driven, Hybrid (SQL + Vector + Graph)
 -- ============================================================
 
 -- =========================
 -- 1. REQUIRED EXTENSIONS
 -- =========================
-CREATE EXTENSION IF NOT EXISTS pgcrypto; -- UUIDs and Hashing
-CREATE EXTENSION IF NOT EXISTS vector;   -- AI Embeddings
-CREATE EXTENSION IF NOT EXISTS citext;   -- Case-insensitive text
-CREATE EXTENSION IF NOT EXISTS age;      -- Apache AGE (Graph Database)
+-- crypto: Used for gen_random_uuid() and hashing (SHA256) for idempotency.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- vector: Enables high-dimensional vector storage for RAG and Semantic Search.
+CREATE EXTENSION IF NOT EXISTS vector;
+-- citext: "Case-Insensitive Text" simplifies email/username comparisons.
+CREATE EXTENSION IF NOT EXISTS citext;
+-- age: Apache AGE for Graph Database capabilities (Nodes/Edges within Postgres).
+CREATE EXTENSION IF NOT EXISTS age;
 
--- Load AGE functionality
+-- Load AGE functionality and set path to include graph catalog
 LOAD 'age';
 SET search_path = ag_catalog, "$user", public;
 
@@ -21,7 +24,8 @@ SET search_path = ag_catalog, "$user", public;
 -- 2. SHARED UTILITIES
 -- =========================
 
--- Auto-update updated_at timestamp
+-- Function: Auto-update 'updated_at' timestamp
+-- Usage: Applied via trigger to all mutable tables to track modification time.
 CREATE OR REPLACE FUNCTION update_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -31,16 +35,19 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- =========================
--- 3. TENANT (CORE)
+-- 3. TENANT (CORE NAMESPACE)
 -- =========================
+-- The root of the multi-tenant architecture. 
+-- Tenant ID remains UUID to ensure global uniqueness across distributed systems.
 CREATE TABLE IF NOT EXISTS tenant (
     tenant_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_name TEXT NOT NULL,
-    status      TEXT DEFAULT 'active',
+    status      TEXT DEFAULT 'active', -- 'active', 'suspended', 'archived'
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Trigger: Maintain updated_at
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -52,43 +59,49 @@ BEGIN
 END $$;
 
 -- ============================================================
--- 4. CDP PROFILES (The "User" Node)
+-- 4. CDP PROFILES (The "User" Entity)
 -- ============================================================
+-- Represents the core customer identity.
+-- ID Type: TEXT (Allows flexibility for external IDs or UUID strings)
 CREATE TABLE IF NOT EXISTS cdp_profiles (
     tenant_id       UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
-    profile_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    ext_id          TEXT,
+    profile_id      TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, 
+    ext_id          TEXT, -- External System ID (e.g., Salesforce ID, Shopify ID)
 
+    -- Contact Info (using CITEXT for case-insensitive email matching)
     email           CITEXT,
     mobile_number   TEXT,
     zalo_number     TEXT,
 
+    -- Demographics
     first_name      TEXT,
     last_name       TEXT,
     job_title       TEXT,
     company_name    TEXT,
 
-    -- Segmentation Data
-    segments        JSONB NOT NULL DEFAULT '[]'::jsonb,
-    data_labels     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    -- Computed Data (JSONB for flexibility)
+    segments        JSONB NOT NULL DEFAULT '[]'::jsonb, -- Current active segments
+    data_labels     JSONB NOT NULL DEFAULT '[]'::jsonb, -- Tags like 'VIP', 'ChurnRisk'
     
-    -- Denormalized, append-only snapshot refs
+    -- Audit Trail: Denormalized, append-only list of segment history
     segment_snapshots JSONB NOT NULL DEFAULT '[]'::jsonb,
     
-    -- Raw Data
+    -- Raw Data: Unstructured attributes ingested from sources
     raw_attributes  JSONB NOT NULL DEFAULT '{}'::jsonb,
 
-    -- [ALERT CENTER UPDATE] User Interest Vector for News Matching
-    -- Represents user's aggregate reading history/investing interests
+    -- AI Personalization:
+    -- Represents user's aggregate reading history or investing interests.
+    -- Used for dot-product similarity search against News/Alerts.
     interest_embedding vector(1536),
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 
+    -- Ensure one profile per external ID per tenant
     CONSTRAINT uq_cdp_profile_ext UNIQUE (tenant_id, ext_id)
 );
 
--- Trigger for updated_at
+-- Trigger: Maintain updated_at
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -99,12 +112,12 @@ BEGIN
     END IF;
 END $$;
 
--- Append-only guard for segment_snapshots
+-- Logic Guard: Ensure segment history is never deleted, only appended to.
 CREATE OR REPLACE FUNCTION prevent_snapshot_removal()
 RETURNS TRIGGER AS $$
 BEGIN
     IF jsonb_array_length(NEW.segment_snapshots) < jsonb_array_length(OLD.segment_snapshots) THEN
-        RAISE EXCEPTION 'segment_snapshots is append-only';
+        RAISE EXCEPTION 'Data Integrity Violation: segment_snapshots is append-only';
     END IF;
     RETURN NEW;
 END;
@@ -120,57 +133,69 @@ BEGIN
     END IF;
 END $$;
 
--- Indexes
+-- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_cdp_profiles_email ON cdp_profiles (tenant_id, email);
-CREATE INDEX IF NOT EXISTS idx_cdp_profiles_segments ON cdp_profiles USING GIN (segments jsonb_path_ops);
+CREATE INDEX IF NOT EXISTS idx_cdp_profiles_segments ON cdp_profiles USING GIN (segments jsonb_path_ops); -- Fast JSON query
 CREATE INDEX IF NOT EXISTS idx_cdp_profiles_raw ON cdp_profiles USING GIN (raw_attributes);
 
--- RLS
+-- Security: Enable Row Level Security (RLS)
 ALTER TABLE cdp_profiles ENABLE ROW LEVEL SECURITY;
--- (RLS Policy omitted for brevity, identical to original)
 
 -- ============================================================
 -- 5. CAMPAIGN (STRATEGY)
 -- ============================================================
+-- Marketing initiatives container.
+-- ID Type: TEXT
 CREATE TABLE IF NOT EXISTS campaign (
     tenant_id      UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
-    campaign_id    UUID NOT NULL DEFAULT gen_random_uuid(),
-    campaign_code  TEXT NOT NULL,
+    campaign_id    TEXT NOT NULL DEFAULT gen_random_uuid()::text,
+    
+    campaign_code  TEXT NOT NULL, -- Human readable code (e.g., 'SUMMER-2026')
     campaign_name  TEXT NOT NULL,
-    objective      TEXT,
+    objective      TEXT, -- 'AWARENESS', 'CONVERSION', etc.
     status         TEXT NOT NULL DEFAULT 'active',
+    
     start_at       TIMESTAMPTZ,
     end_at         TIMESTAMPTZ,
+    
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    
     CONSTRAINT pk_campaign PRIMARY KEY (tenant_id, campaign_id),
     CONSTRAINT uq_campaign_code UNIQUE (tenant_id, campaign_code)
 );
--- (Triggers and RLS for campaign preserved from original)
 
 -- ============================================================
 -- 6. MARKETING EVENT (EXECUTION)
 -- ============================================================
+-- Specific actions within a campaign (e.g., "Send Email Tuesday").
+-- Partitioned by Tenant for scalability.
 CREATE TABLE IF NOT EXISTS marketing_event (
     tenant_id      UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
-    event_id       TEXT NOT NULL,
-    campaign_id    UUID,
+    event_id       TEXT NOT NULL, -- Client-provided or generated ID
+    campaign_id    TEXT, -- Reference to Parent Campaign
+    
     event_name     TEXT NOT NULL,
-    event_type     TEXT NOT NULL,
-    event_channel  TEXT NOT NULL,
+    event_type     TEXT NOT NULL, -- 'BROADCAST', 'TRIGGER', 'API'
+    event_channel  TEXT NOT NULL, -- 'EMAIL', 'SMS', 'PUSH'
+    
     start_at       TIMESTAMPTZ NOT NULL,
     end_at         TIMESTAMPTZ NOT NULL,
     status         TEXT NOT NULL DEFAULT 'planned',
+    
+    -- AI Context: Embedding of the event description for "Campaign RAG"
     embedding      VECTOR(1536),
     embedding_status TEXT NOT NULL DEFAULT 'pending',
+    
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    
     CONSTRAINT pk_marketing_event PRIMARY KEY (tenant_id, event_id),
     CONSTRAINT fk_marketing_event_campaign FOREIGN KEY (tenant_id, campaign_id) 
         REFERENCES campaign (tenant_id, campaign_id) ON DELETE SET NULL
 ) PARTITION BY HASH (tenant_id);
 
--- Partitions (0-15)
+-- Create Partitions (Modulus 16)
 DO $$
 BEGIN
     FOR i IN 0..15 LOOP
@@ -178,57 +203,59 @@ BEGIN
     END LOOP;
 END $$;
 
--- (Triggers for ID generation and RLS for marketing_event preserved from original)
-
 -- ============================================================
 -- 7. SEGMENT SNAPSHOTS & MEMBERS
 -- ============================================================
+-- Static lists of users captured at a specific point in time.
+-- ID Type: TEXT
+
 CREATE TABLE IF NOT EXISTS segment_snapshot (
     tenant_id        UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
-    snapshot_id      UUID NOT NULL DEFAULT gen_random_uuid(),
+    snapshot_id      TEXT NOT NULL DEFAULT gen_random_uuid()::text,
+    
     segment_name     TEXT NOT NULL,
     segment_version  TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    
     CONSTRAINT pk_segment_snapshot PRIMARY KEY (tenant_id, snapshot_id)
 );
 
 CREATE TABLE IF NOT EXISTS segment_snapshot_member (
     tenant_id    UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
-    snapshot_id  UUID NOT NULL,
-    profile_id   UUID NOT NULL,
+    snapshot_id  TEXT NOT NULL,
+    profile_id   TEXT NOT NULL, -- FK to cdp_profiles
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    
     CONSTRAINT pk_segment_snapshot_member PRIMARY KEY (tenant_id, snapshot_id, profile_id),
     CONSTRAINT fk_snapshot_member_snapshot FOREIGN KEY (tenant_id, snapshot_id) REFERENCES segment_snapshot (tenant_id, snapshot_id) ON DELETE CASCADE,
     CONSTRAINT fk_snapshot_member_profile FOREIGN KEY (profile_id) REFERENCES cdp_profiles (profile_id) ON DELETE CASCADE
 );
 
 -- ============================================================
--- 8. [NEW MODULE] ALERT CENTER - REFERENCE DATA
+-- 8. ALERT CENTER - REFERENCE DATA
 -- ============================================================
 
 -- 8.1 Instruments (Assets/Books/Indices)
--- Shared Reference Data or Tenant Specific. 
--- We use tenant_id nullable; if NULL, it's a global instrument (e.g. AAPL).
 CREATE TABLE IF NOT EXISTS instruments (
     instrument_id   BIGSERIAL PRIMARY KEY,
-    tenant_id       UUID REFERENCES tenant(tenant_id) ON DELETE CASCADE, -- Nullable for global assets
+    tenant_id       UUID REFERENCES tenant(tenant_id) ON DELETE CASCADE, -- NULL = Global Asset
     
-    symbol          VARCHAR(20) NOT NULL, -- e.g. 'AAPL', 'EURUSD'
+    symbol          VARCHAR(20) NOT NULL, -- e.g. 'AAPL', 'BTC-USD'
     name            TEXT NOT NULL,
-    type            VARCHAR(50) NOT NULL, -- 'STOCK', 'FOREX', 'CRYPTO', 'ECONOMIC'
+    type            VARCHAR(50) NOT NULL, -- 'STOCK', 'CRYPTO', 'FX'
     sector          VARCHAR(100),
-    meta_data       JSONB DEFAULT '{}'::jsonb, -- Store earnings dates, etc.
+    meta_data       JSONB DEFAULT '{}'::jsonb,
     
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now(),
     
-    CONSTRAINT uq_instrument_symbol UNIQUE (tenant_id, symbol) -- Unique per tenant or global
+    CONSTRAINT uq_instrument_symbol UNIQUE (tenant_id, symbol)
 );
 
 -- 8.2 Real-time Market Snapshot
--- High-throughput table for the "Minute Worker"
+-- High-write throughput table.
 CREATE TABLE IF NOT EXISTS market_snapshot (
-    symbol          VARCHAR(20) PRIMARY KEY, -- Linked to instruments.symbol
+    symbol          VARCHAR(20) PRIMARY KEY,
     price           NUMERIC(18, 5),
     change_percent  NUMERIC(5, 2),
     volume          BIGINT,
@@ -236,17 +263,10 @@ CREATE TABLE IF NOT EXISTS market_snapshot (
 );
 
 -- ============================================================
--- 9. [NEW MODULE] ALERT CENTER - RULES ENGINE
+-- 9. ALERT CENTER - RULES ENGINE
 -- ============================================================
 
--- ============================================================
--- FIXED ALERT RULES SCHEMA (Idempotent & Deterministic Hash ID)
--- ============================================================
-
--- Ensure pgcrypto is enabled for hashing
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
--- 1. SAFELY CREATE ENUMS (Idempotent Check)
+-- Enums for Type Safety
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'alert_source_enum') THEN
@@ -258,21 +278,22 @@ BEGIN
     END IF;
 END$$;
 
--- 2. TABLE DEFINITION
 CREATE TABLE IF NOT EXISTS alert_rules (
-    -- ID is now 64 chars to store SHA-256 Hex
+    -- ID is a deterministic hash (TEXT/VARCHAR) based on the rule logic.
     rule_id         VARCHAR(64) NOT NULL, 
     tenant_id       UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
-    profile_id      UUID NOT NULL REFERENCES cdp_profiles(profile_id) ON DELETE CASCADE,
     
-    -- Target
+    -- UPDATED: profile_id is now TEXT to match cdp_profiles PK
+    profile_id      TEXT NOT NULL REFERENCES cdp_profiles(profile_id) ON DELETE CASCADE,
+    
+    -- Target Asset
     symbol          VARCHAR(20) NOT NULL, 
     
     -- Configuration
-    alert_type      VARCHAR(50) NOT NULL, -- 'PRICE', 'EARNINGS', 'NEWS', 'AI_SIGNAL'
+    alert_type      VARCHAR(50) NOT NULL, -- 'PRICE', 'NEWS', 'AI_SIGNAL'
     source          alert_source_enum DEFAULT 'USER_MANUAL',
     
-    -- The Logic
+    -- The Condition (e.g., {"operator": ">", "value": 150})
     condition_logic JSONB NOT NULL,
     
     status          alert_status_enum DEFAULT 'ACTIVE',
@@ -281,12 +302,12 @@ CREATE TABLE IF NOT EXISTS alert_rules (
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now(),
     
-    -- Composite PK for multi-tenancy + idempotency
+    -- Composite PK for multi-tenancy
     CONSTRAINT pk_alert_rules PRIMARY KEY (tenant_id, rule_id)
 );
 
--- 3. HASH GENERATION FUNCTION
--- Purpose: Ensures rule_id is always unique to the specific logic configuration.
+-- Idempotency Logic: Generate Hash ID based on Rule Content
+-- Ensures we don't create duplicate rules for the same user/symbol/condition.
 CREATE OR REPLACE FUNCTION generate_alert_rule_hash()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -294,11 +315,10 @@ BEGIN
         digest(
             lower(concat_ws('||',
                 NEW.tenant_id::text,
-                NEW.profile_id::text,
+                NEW.profile_id, -- Already text
                 NEW.symbol,
                 NEW.alert_type,
                 NEW.frequency,
-                -- Cast JSONB to text to ensure logic is part of the unique hash
                 NEW.condition_logic::text 
             )),
             'sha256'
@@ -309,54 +329,29 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- 4. TRIGGER ASSIGNMENT
+-- Triggers for Hash and Timestamp
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_trigger
-        WHERE tgname = 'trg_alert_rules_hash'
-          AND tgrelid = 'alert_rules'::regclass
-    ) THEN
-        CREATE TRIGGER trg_alert_rules_hash
-        BEFORE INSERT ON alert_rules
-        FOR EACH ROW
-        EXECUTE FUNCTION generate_alert_rule_hash();
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_alert_rules_hash' AND tgrelid = 'alert_rules'::regclass) THEN
+        CREATE TRIGGER trg_alert_rules_hash BEFORE INSERT ON alert_rules
+        FOR EACH ROW EXECUTE FUNCTION generate_alert_rule_hash();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_alert_rules_updated_at' AND tgrelid = 'alert_rules'::regclass) THEN
+        CREATE TRIGGER trg_alert_rules_updated_at BEFORE UPDATE ON alert_rules
+        FOR EACH ROW EXECUTE FUNCTION update_timestamp();
     END IF;
 END $$;
 
--- 5. UPDATED_AT TRIGGER
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_trigger
-        WHERE tgname = 'trg_alert_rules_updated_at'
-          AND tgrelid = 'alert_rules'::regclass
-    ) THEN
-        CREATE TRIGGER trg_alert_rules_updated_at
-        BEFORE UPDATE ON alert_rules
-        FOR EACH ROW
-        EXECUTE FUNCTION update_timestamp();
-    END IF;
-END $$;
-
--- 6. INDEXES & RLS
+-- Index for the "Worker" that scans active rules
 CREATE INDEX IF NOT EXISTS idx_alert_rules_worker 
 ON alert_rules (symbol, status) 
 WHERE status = 'ACTIVE';
 
+-- RLS Policy
 ALTER TABLE alert_rules ENABLE ROW LEVEL SECURITY;
-
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_policies
-        WHERE policyname = 'alert_rules_tenant_rls'
-          AND schemaname = current_schema()
-          AND tablename = 'alert_rules'
-    ) THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'alert_rules_tenant_rls' AND tablename = 'alert_rules') THEN
         CREATE POLICY alert_rules_tenant_rls ON alert_rules
         USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
@@ -364,51 +359,52 @@ BEGIN
 END $$;
 
 -- ============================================================
--- 10. [NEW MODULE] ALERT CENTER - SEMANTIC NEWS & SIGNALS
+-- 10. ALERT CENTER - SEMANTIC NEWS & SIGNALS
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS news_feed (
     news_id         BIGSERIAL PRIMARY KEY,
-    tenant_id       UUID REFERENCES tenant(tenant_id) ON DELETE CASCADE, -- Optional: Private news
+    tenant_id       UUID REFERENCES tenant(tenant_id) ON DELETE CASCADE,
     
     title           TEXT NOT NULL,
     content         TEXT,
     url             TEXT,
     
-    -- AI Analysis
-    related_symbols VARCHAR(20)[], -- Array of tickers
+    -- Metadata extracted by AI
+    related_symbols VARCHAR(20)[],
     sentiment_score NUMERIC(3,2),
     
-    -- Embedding for Vector Search (Hybrid Logic)
+    -- Hybrid Search: Vector Embedding
     content_embedding vector(1536),
     
     published_at    TIMESTAMPTZ DEFAULT now()
 );
 
--- HNSW Index for fast semantic search
+-- HNSW Index: High-performance vector similarity search
 CREATE INDEX IF NOT EXISTS idx_news_embedding 
 ON news_feed USING hnsw (content_embedding vector_cosine_ops);
-
 
 -- ============================================================
 -- 11. AGENT TASK (AI DECISION TRACE)
 -- ============================================================
--- (Updated to link to Alert Center concepts)
+-- Logs AI reasoning and actions.
+-- ID Type: TEXT
 CREATE TABLE IF NOT EXISTS agent_task (
     tenant_id    UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
-    task_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id      TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
 
-    agent_name   TEXT NOT NULL, -- e.g., 'MarketMonitorAgent'
-    task_type    TEXT NOT NULL, -- e.g., 'PROCESS_SIGNAL', 'GENERATE_RULE'
+    agent_name   TEXT NOT NULL, 
+    task_type    TEXT NOT NULL,
     task_goal    TEXT,
 
-    campaign_id  UUID,
+    -- Linkage to other entities (All converted to TEXT)
+    campaign_id  TEXT,
     event_id     TEXT,
-    snapshot_id  UUID,
+    snapshot_id  TEXT, 
     
-    -- [ALERT LINK]
     related_news_id BIGINT REFERENCES news_feed(news_id),
 
+    -- Chain of Thought (CoT) storage
     reasoning_summary TEXT,
     reasoning_trace   JSONB,
 
@@ -418,32 +414,36 @@ CREATE TABLE IF NOT EXISTS agent_task (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at TIMESTAMPTZ,
 
-    CONSTRAINT fk_agent_task_campaign FOREIGN KEY (tenant_id, campaign_id) REFERENCES campaign (tenant_id, campaign_id) ON DELETE SET NULL
+    CONSTRAINT fk_agent_task_campaign FOREIGN KEY (tenant_id, campaign_id) 
+        REFERENCES campaign (tenant_id, campaign_id) ON DELETE SET NULL
 );
--- (RLS preserved)
 
 -- ============================================================
 -- 12. DELIVERY LOG (EXECUTION TRUTH)
 -- ============================================================
+-- Final record of messages sent to users.
+-- ID Type: TEXT where applicable.
 CREATE TABLE IF NOT EXISTS delivery_log (
     tenant_id     UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
     delivery_id   BIGSERIAL PRIMARY KEY,
-    campaign_id   UUID,
-    event_id      TEXT NOT NULL,
-    profile_id    UUID NOT NULL,
     
-    channel       TEXT NOT NULL, -- 'WEB_PUSH', 'EMAIL'
+    campaign_id   TEXT, -- FK to campaign
+    event_id      TEXT NOT NULL,
+    
+    profile_id    TEXT NOT NULL, -- FK to cdp_profiles (TEXT)
+    
+    channel       TEXT NOT NULL,
     delivery_status TEXT NOT NULL,
     provider_response JSONB,
     
     sent_at       TIMESTAMPTZ,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
--- (RLS preserved)
 
 -- ============================================================
 -- 13. EMBEDDING QUEUE
 -- ============================================================
+-- Asynchronous queue for processing embeddings.
 CREATE TABLE IF NOT EXISTS embedding_job (
     job_id      BIGSERIAL PRIMARY KEY,
     tenant_id   UUID NOT NULL,
@@ -454,26 +454,94 @@ CREATE TABLE IF NOT EXISTS embedding_job (
 );
 
 -- ============================================================
--- 14. GRAPH SETUP (Apache AGE)
+-- 14. SYSTEM BOOTSTRAP: DEFAULT TENANT
 -- ============================================================
--- NOTE: AGE commands typically require a specific session context.
--- These commands initialize the schema for the graph relationship queries.
 
-/*
--- 1. Create Graph Context
-SELECT create_graph('investing_knowledge_graph');
+-- 1. Safely insert default 'master app' tenant
+-- Uses SELECT ... WHERE NOT EXISTS for concurrency-safe idempotency
+INSERT INTO tenant (tenant_name, status)
+SELECT 'master app', 'active'
+WHERE NOT EXISTS (
+    SELECT 1 FROM tenant WHERE tenant_name = 'master app'
+);
 
--- 2. Create Labels (Nodes)
-SELECT create_vlabel('investing_knowledge_graph', 'User');
-SELECT create_vlabel('investing_knowledge_graph', 'Asset');
-SELECT create_vlabel('investing_knowledge_graph', 'Sector');
-SELECT create_vlabel('investing_knowledge_graph', 'NewsEvent');
+-- 2. Set the Session Context
+-- We set 'app.current_tenant_id' so that RLS policies on other tables 
+-- (like alert_rules) will allow inserts immediately after this block.
+DO $$
+DECLARE
+    v_tenant_id UUID;
+BEGIN
+    -- Fetch the ID of the master app
+    SELECT tenant_id INTO v_tenant_id 
+    FROM tenant 
+    WHERE tenant_name = 'master app';
 
--- 3. Create Labels (Edges)
-SELECT create_elabel('investing_knowledge_graph', 'HOLDS');      -- User -> Asset
-SELECT create_elabel('investing_knowledge_graph', 'WATCHES');    -- User -> Asset
-SELECT create_elabel('investing_knowledge_graph', 'BELONGS_TO'); -- Asset -> Sector
-SELECT create_elabel('investing_knowledge_graph', 'IMPACTS');    -- NewsEvent -> Sector
-*/
+    -- Set the config variable. 
+    -- Parameter 3 (is_local) is FALSE, meaning this applies to the whole session,
+    -- not just this transaction block.
+    PERFORM set_config('app.current_tenant_id', v_tenant_id::text, false);
+    
+    -- Optional: Log to console for verification
+    RAISE NOTICE 'Session configured for Tenant: master app (%)', v_tenant_id;
+END $$;
 
--- End of Schema
+-- ============================================================
+-- 15. BEHAVIORAL EVENTS (THE FEEDBACK LOOP)
+-- ============================================================
+-- Captures high-frequency user actions for AI training & triggering.
+-- Partitioned by time (Monthly) because this table grows huge.
+
+CREATE TABLE IF NOT EXISTS behavioral_events (
+    event_id        BIGSERIAL, -- High throughput, avoid UUID overhead here if possible, or use UUIDv7
+    tenant_id       UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
+    profile_id      TEXT NOT NULL, -- No FK constraint for write speed? Or keep FK for integrity. Let's keep FK.
+    
+    event_type      TEXT NOT NULL, -- 'VIEW', 'CLICK', 'DISMISS', 'SHARE', 'CONVERT'
+    
+    -- Context: What did they interact with?
+    entity_type     TEXT, -- 'NEWS', 'ALERT', 'ASSET', 'CAMPAIGN'
+    entity_id       TEXT, -- The ID of the news/alert/asset
+    
+    -- AI Feedback: Did this interaction signal positive or negative interest?
+    sentiment_val   INTEGER DEFAULT 0, -- +1 (Positive), -1 (Negative), 0 (Neutral)
+    
+    meta_data       JSONB DEFAULT '{}'::jsonb, -- Store URL clicked, device info, etc.
+    
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    
+    CONSTRAINT fk_behavioral_profile FOREIGN KEY (profile_id) REFERENCES cdp_profiles (profile_id) ON DELETE CASCADE
+) PARTITION BY RANGE (created_at);
+
+-- Create partitions for the next 12 months automatically
+DO $$
+DECLARE
+    start_date DATE := date_trunc('month', now());
+    partition_date DATE;
+    partition_name TEXT;
+BEGIN
+    FOR i IN 0..11 LOOP
+        partition_date := start_date + (i || ' month')::interval;
+        partition_name := 'behavioral_events_' || to_char(partition_date, 'YYYY_MM');
+        
+        EXECUTE format(
+            'CREATE TABLE IF NOT EXISTS %I PARTITION OF behavioral_events FOR VALUES FROM (%L) TO (%L)',
+            partition_name,
+            partition_date,
+            partition_date + '1 month'::interval
+        );
+    END LOOP;
+END $$;
+
+-- Indexes for Analytics & AI Training
+CREATE INDEX IF NOT EXISTS idx_behavioral_profile_time 
+    ON behavioral_events (profile_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_behavioral_entity 
+    ON behavioral_events (entity_type, entity_id);
+
+-- RLS
+ALTER TABLE behavioral_events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY behavioral_events_tenant_rls ON behavioral_events
+    USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
