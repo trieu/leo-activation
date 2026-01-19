@@ -1,3 +1,15 @@
+import logging
+import os
+import sys
+from typing import Optional
+
+# ensure project root on path for imports used by tests
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from data_workers.sync_segment_profiles import run_synch_profiles
+logger = logging.getLogger(__name__)
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     argv = argv or sys.argv[1:]
 
@@ -9,7 +21,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     segment_name = argv[0]
 
     try:
-        run(segment_name)
+        run_synch_profiles(segment_name)
     except Exception as exc:
         logger.exception("Sync failed: %s", exc)
         raise SystemExit(1)

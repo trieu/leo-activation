@@ -1,4 +1,4 @@
-
+from psycopg.types.json import Json
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, EmailStr, Field
 
@@ -15,7 +15,7 @@ class PGProfileUpsert(BaseModel):
     job_title: Optional[str] = None
 
     segments: List[str] = Field(default_factory=list)
-    raw_attributes: Dict[str, Any]
+    raw_attributes: Dict[str, Any] = Field(default_factory=dict)
 
     def to_pg_row(self) -> Dict[str, Any]:
         return {
@@ -26,6 +26,6 @@ class PGProfileUpsert(BaseModel):
             "first_name": self.first_name,
             "last_name": self.last_name,
             "job_title": self.job_title,
-            "segments": self.segments,
-            "raw_attributes": self.raw_attributes,
+            "segments": Json(self.segments),          # ✅ JSONB
+            "raw_attributes": Json(self.raw_attributes),  # ✅ JSONB
         }

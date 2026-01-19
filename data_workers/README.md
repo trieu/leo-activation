@@ -40,10 +40,10 @@ REDIS_URL=redis://localhost:6379/0
 
 # --- Database Connections ---
 # Target (Warehouse)
-DB_HOST=localhost
-DB_NAME=leo_cdp
-DB_USER=postgres
-DB_PASSWORD=secret
+PGSQL_DB_HOST=localhost
+PGSQL_DB_NAME=leo_cdp
+PGSQL_DB_USER=postgres
+PGSQL_DB_PASSWORD=secret
 
 # Source (Raw Data)
 ARANGO_HOST=http://localhost:8529

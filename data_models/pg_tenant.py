@@ -37,7 +37,8 @@ def resolve_and_set_default_tenant(
                 f"Default tenant '{tenant_name}' not found in DB"
             )
 
-        tenant_id = str(row[0])
+        # ✅ Set tenant context for RLS
+        tenant_id = str(row["tenant_id"])
 
         cur.execute(sql_set_context, (tenant_id,))
 

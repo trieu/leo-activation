@@ -1,5 +1,3 @@
-# requirements.txt
-
 fastapi
 # Web framework for building high-performance REST / async APIs
 # Used for LEO Activation & CDP service endpoints
@@ -35,9 +33,11 @@ requests
 # Simple HTTP client for calling external APIs
 # Used for webhooks, third-party services, or legacy APIs
 
-pydantic
-# Data validation and serialization
-# Core to FastAPI request/response models and config schemas
+pydantic 
+# Core dependency of FastAPI, data validation and settings management using Python type annotations
+
+pydantic-settings
+# pydantic-settings adds enhanced settings management capabilities
 
 accelerate
 # Hugging Face utility for efficient model loading and inference

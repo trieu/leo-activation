@@ -8,7 +8,7 @@ from data_models.pg_tenant import resolve_and_set_default_tenant
 from data_utils.arango_client import get_arango_db
 from data_utils.pg_client import get_pg_connection
 from data_utils.settings import DatabaseSettings
-from data_workers.arango_profile_repo import ArangoProfileRepository
+from data_workers.arango_profile_repository import ArangoProfileRepository
 from data_workers.arango_to_pg_profile_sync_service import ArangoToPostgresSyncService
 from data_workers.pg_profile_repository import PGProfileRepository
 
@@ -16,7 +16,7 @@ from data_workers.pg_profile_repository import PGProfileRepository
 logger = logging.getLogger(__name__)
 
 
-def run(segment_name: str) -> int:
+def run_synch_profiles(segment_name: str) -> int:
     """
     Entry point for syncing profiles of a given segment
     from ArangoDB into PostgreSQL.
@@ -53,6 +53,4 @@ def run(segment_name: str) -> int:
     )
 
     return synced_count
-
-
 
