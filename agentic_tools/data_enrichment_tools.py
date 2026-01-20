@@ -3,13 +3,13 @@ from typing import Dict
 
 logger = logging.getLogger("agentic_tools.data_enrichment")
 
-def analyze_segment(segment: str) -> Dict[str, str]:
+def analyze_segment(segment_identifier: str) -> Dict[str, str]:
     """
     Analyze all data profiles belonging to a specific customer segment.
     to trigger segment-level data analysis.
 
     Args:
-        segment: The segment name or segment key to analyze.
+        segment_identifier: The segment name or segment key to analyze.
                  Examples:
                     - "name:New Customers - Last 30 Days"
                     - "name:High-Value Customers"
@@ -23,9 +23,9 @@ def analyze_segment(segment: str) -> Dict[str, str]:
                 - result: Status message describing the analysis outcome.
     """
 
-    logger.info("Analyzing data profile for segment: %s", segment)
+    logger.info("Analyzing data profile for segment_identifier: %s", segment_identifier)
 
     return {
-        "segment_identifier": segment,
+        "segment_identifier": segment_identifier,
         "result": "Analysis complete",
     }

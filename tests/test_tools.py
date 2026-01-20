@@ -1,6 +1,10 @@
+import os
+import sys
 import requests
 import json
 from typing import Dict, Any
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Configuration
 API_URL = "http://localhost:8000/tool_calling"
@@ -14,15 +18,14 @@ TEST_CASES: Dict[str, Dict[str, Any]] = {
         "location": "Ho Chi Minh City, Vietnam"
     },
     
-    "get_current_marketing_event": {
+    "get_marketing_events": {
         # Assuming similar args to weather or simple query
         "location": "Hanoi" 
     },
     
     "manage_cdp_segment": {
-        "action": "create",
-        "segment_name": "Test Segment Alpha",
-        "criteria": {"age_min": 25, "active_last_7_days": True}
+        "segment_identifier": "Test Segment Alpha",
+        "action": "update"
     },
     
     "analyze_segment": {
@@ -31,12 +34,6 @@ TEST_CASES: Dict[str, Dict[str, Any]] = {
     
     "show_all_segments": {
         "limit": 5  # Assuming it might take a limit, or empty dict if none
-    },
-    
-    "activate_channel": {
-        "segment_name": "New Users",
-        "channel": "zalo_oa",
-        "message_template": "welcome_promo_2025"
     }
 }
 

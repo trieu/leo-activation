@@ -5,18 +5,19 @@ from typing import Dict, Literal, Any, Optional
 logger = logging.getLogger("agentic_tools.customer_data")
 
 
-def show_all_segments(tenant_id: Optional[str] = None) -> Dict[str, str]:
+def show_all_segments(tenant_id: Optional[str] = None, limit: Optional[int] = 5) -> Dict[str, str]:
     """
     show all segments in the CDP for the given tenant.
 
     Args:
         tenant_id: the unique identifier for the tenant. If None, defaults to the current tenant.
+        limit: the maximum number of segments to return.
 
     Returns:
         A list of segments with their IDs and names.
     """
 
-    logger.info("show all segments in the CDP for the given tenant_id: %s", tenant_id)
+    logger.info("show all segments in the CDP for the given tenant_id: %s limit: %s", tenant_id, limit)
 
     segments = [{"segment_id": "seg_001", "name": "New Users"},
                 {"segment_id": "seg_002", "name": "High Value Customers"},

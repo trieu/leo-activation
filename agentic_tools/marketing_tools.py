@@ -194,18 +194,19 @@ def activate_channel(
         }
         
 
-def get_marketing_events(tenant_id: Optional[str] = None) -> Dict[str, str]:
+def get_marketing_events(tenant_id: Optional[str] = None, location: Optional[str] = None) -> Dict[str, str]:
     """
     show all marketing events for the given tenant.
 
     Args:
         tenant_id: the unique identifier for the tenant. If None, defaults to the current tenant.
+        location: the geographic location to filter events by (e.g., 'Hanoi', 'Ho Chi Minh City').
 
     Returns:
         A list of marketing events with their IDs and names.
     """
 
-    logger.info("show all marketing events for the given tenant_id: %s", tenant_id)
+    logger.info("show all marketing events for the given tenant_id: %s location: %s", tenant_id, location)
 
     # TODO: Replace with real API call to fetch marketing events
     marketing_events = [{"event_id": "me_001", "name": "Summer Sale 2026"},
