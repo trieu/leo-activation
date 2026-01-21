@@ -3,7 +3,7 @@ import psycopg
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TENANT_NAME = "master app"
+DEFAULT_TENANT_NAME = "master"
 
 
 def resolve_and_set_default_tenant(

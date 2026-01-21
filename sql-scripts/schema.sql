@@ -675,12 +675,12 @@ CREATE TABLE IF NOT EXISTS embedding_job (
 -- 14. SYSTEM BOOTSTRAP: DEFAULT TENANT
 -- ============================================================
 
--- 1. Safely insert default 'master app' tenant
+-- 1. Safely insert default 'master' tenant
 -- Uses SELECT ... WHERE NOT EXISTS for concurrency-safe idempotency
 INSERT INTO tenant (tenant_name, status)
-SELECT 'master app', 'active'
+SELECT 'master', 'active'
 WHERE NOT EXISTS (
-    SELECT 1 FROM tenant WHERE tenant_name = 'master app'
+    SELECT 1 FROM tenant WHERE tenant_name = 'master'
 );
 
 -- 2. Set the Session Context
@@ -690,10 +690,10 @@ DO $$
 DECLARE
     v_tenant_id UUID;
 BEGIN
-    -- Fetch the ID of the master app
+    -- Fetch the ID of the master
     SELECT tenant_id INTO v_tenant_id 
     FROM tenant 
-    WHERE tenant_name = 'master app';
+    WHERE tenant_name = 'master';
 
     -- Set the config variable. 
     -- Parameter 3 (is_local) is FALSE, meaning this applies to the whole session,
@@ -701,7 +701,7 @@ BEGIN
     PERFORM set_config('app.current_tenant_id', v_tenant_id::text, false);
     
     -- Optional: Log to console for verification
-    RAISE NOTICE 'Session configured for Tenant: master app (%)', v_tenant_id;
+    RAISE NOTICE 'Session configured for Tenant: master (%)', v_tenant_id;
 END $$;
 
 -- ============================================================
