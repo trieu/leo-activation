@@ -16,6 +16,8 @@ from data_utils.arango_client import get_arango_db
 logger = logging.getLogger(__name__)
 
 class ZaloOAChannel(NotificationChannel):
+    
+    
 
     # Constants for DB Lookup
     CONNECTOR_NAME = "LEO Zalo Connector"
@@ -23,6 +25,8 @@ class ZaloOAChannel(NotificationChannel):
 
     def __init__(self, override_token: str = None):
         # -------- Database Connection --------
+        # FIXME profile must load from PGSQL later
+        
         try:
             self.db = get_arango_db(DatabaseSettings())
         except Exception as e:

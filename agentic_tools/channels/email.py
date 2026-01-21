@@ -40,9 +40,7 @@ class SegmentProfileLoader:
         Fetches the list of user profiles (dict) for a given segment.
         Returns an empty list if DB is not connected or segment is empty.
         """
-        if not self.db:
-            logger.error("[ProfileLoader] Database connection unavailable.")
-            return []
+
 
         try:
             # TODO: Implement the actual function in cdp_db_utils.py
