@@ -3,8 +3,6 @@ import psycopg
 from psycopg.rows import dict_row
 
 
-
-
 def get_pg_connection(settings: DatabaseSettings) -> psycopg.Connection:
     """
     Create a PostgreSQL connection using Settings.
