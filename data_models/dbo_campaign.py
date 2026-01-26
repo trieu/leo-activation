@@ -1,3 +1,5 @@
+"""Data models for campaign management including campaigns, marketing events, and activation experiments."""
+
 import uuid
 from datetime import datetime
 from sqlalchemy import Index, String, ForeignKey, UniqueConstraint

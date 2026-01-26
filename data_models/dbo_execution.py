@@ -1,3 +1,5 @@
+"""Data models for execution tracking including agent tasks, delivery logs, activation outcomes, message templates, and embedding jobs."""
+
 import uuid
 from decimal import Decimal
 from datetime import datetime
@@ -10,6 +12,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, TimestampMixin
 
 class AgentTask(Base):
+    """ Represents a task assigned to an AI agent within the system.
+    Args:
+        Base (_type_): _base class_
+    """
     __tablename__ = "agent_task"
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.tenant_id", ondelete="CASCADE"), nullable=False)
@@ -46,6 +52,7 @@ class AgentTask(Base):
     )
 
 class DeliveryLog(Base):
+    """ Log of message deliveries for campaigns and events. """
     __tablename__ = "delivery_log"
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenant.tenant_id", ondelete="CASCADE"), nullable=False)
@@ -64,6 +71,13 @@ class DeliveryLog(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 class ActivationOutcome(Base):
+    """ 
+        Links a specific delivery to a concrete user outcome.
+        This table is append-only and represents attribution truth.
+        e.g: This activation of delivery (email / push / message) is credited with this outcome.
+    Args:
+        Base (_type_): _base class_
+    """
     __tablename__ = "activation_outcomes"
 
     outcome_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -84,6 +98,13 @@ class ActivationOutcome(Base):
     )
 
 class MessageTemplate(Base, TimestampMixin):
+    """ template to send messages
+
+    Args:
+        Base (_type_): _description_
+        TimestampMixin (_type_): _description_
+    """
+    
     __tablename__ = "message_templates"
 
     template_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("gen_random_uuid()"))
@@ -110,6 +131,11 @@ class MessageTemplate(Base, TimestampMixin):
     )
 
 class EmbeddingJob(Base):
+    """ Create a table to track embedding jobs for events.
+
+    Args:
+        Base (_type_): _description_
+    """
     __tablename__ = "embedding_job"
 
     job_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

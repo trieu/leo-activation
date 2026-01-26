@@ -1,9 +1,10 @@
+"""Data models for alerting system including instruments, market snapshots, alert rules, and news feeds."""
+
 import uuid
 import enum
 from decimal import Decimal
 from datetime import datetime
 
-# Added Text import here
 from sqlalchemy import String, ForeignKey, Numeric, BigInteger, Enum, ARRAY, Index, UniqueConstraint, text, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column

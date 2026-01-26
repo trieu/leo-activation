@@ -1,7 +1,8 @@
+from data_models.dbo_tenant import resolve_and_set_default_tenant
 from data_workers.pg_profile_repository import PGProfileRepository
 from data_utils.settings import DatabaseSettings
 from data_utils.pg_client import get_pg_connection
-from data_models.pg_tenant import resolve_and_set_default_tenant
+
 import logging
 import sys
 import json

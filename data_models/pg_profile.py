@@ -1,3 +1,8 @@
+"""
+    Data model for PostgreSQL CDP profile upsert operations.
+    The model is mapped to the structure of the cdp_profiles table and Arango CDP profile data.
+"""
+
 from psycopg.types.json import Json
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -6,8 +11,13 @@ import re
 
 _PHONE_RE = re.compile(r"^\+?[0-9]{7,15}$")
 
-
 class PGProfileUpsert(BaseModel):
+    """
+    Data model for upserting a CDP profile into PostgreSQL.
+    Guarantees:
+    - Validates emails and phone numbers, dropping invalid entries.
+    - Provides a method to serialize into a dict compatible with psycopg.
+    """
     # =====================================================
     # MULTI-TENANCY
     # =====================================================

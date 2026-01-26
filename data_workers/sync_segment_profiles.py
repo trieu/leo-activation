@@ -4,7 +4,7 @@ from typing import Optional
 
 
 
-from data_models.pg_tenant import resolve_and_set_default_tenant
+from data_models.dbo_tenant import resolve_and_set_default_tenant
 from data_utils.arango_client import get_arango_db
 from data_utils.pg_client import get_pg_connection
 from data_utils.settings import DatabaseSettings

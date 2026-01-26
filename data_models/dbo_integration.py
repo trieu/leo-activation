@@ -1,3 +1,5 @@
+"""Data models for data source integration and synchronization settings."""
+
 import uuid
 from datetime import datetime, timedelta
 from sqlalchemy import String, ForeignKey, Boolean, Interval, UniqueConstraint, Index, text

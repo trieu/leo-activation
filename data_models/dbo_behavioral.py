@@ -1,3 +1,5 @@
+"""Data model for storing behavioral events associated with user profiles."""
+
 import uuid
 from datetime import datetime
 from sqlalchemy import String, ForeignKey, BigInteger, text, Integer, Index

@@ -1,3 +1,5 @@
+"""Data models for segment snapshots and their members."""
+
 import uuid
 from datetime import datetime
 from sqlalchemy import String, ForeignKey, text

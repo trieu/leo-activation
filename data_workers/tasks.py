@@ -6,7 +6,7 @@ from typing import Optional
 import redis
 from celery import shared_task
 
-from data_models.pg_tenant import resolve_and_set_default_tenant
+from data_models.dbo_tenant import resolve_and_set_default_tenant
 from data_utils.pg_client import get_pg_connection
 from data_utils.settings import DatabaseSettings
 from data_workers.sync_segment_profiles import run_synch_profiles

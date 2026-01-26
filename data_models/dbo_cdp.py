@@ -1,3 +1,5 @@
+"""Data models for Customer Data Platform (CDP) profiles and consent management."""
+
 from sqlalchemy import text
 from datetime import datetime
 import uuid
