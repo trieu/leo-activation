@@ -210,7 +210,9 @@ FB_PAGE_ID=
 
 # Optional helpers
 HUGGINGFACE_TOKEN=
-LEO_CDP_API_URL=
+
+# API Key for LeoCDP Data Sync
+DATA_SYNC_API_KEY=your_leocdp_api_key_here
 
 # Database configuration
 

@@ -1,446 +1,266 @@
-# LEO Activation – Database Technical Documentation
-
-**System:** LEO Activation (AI-Driven Marketing & Notification Platform)
-**Database:** PostgreSQL 15+ / 16
-**Architecture:** Event-Driven · Agent-Oriented · Deterministic
-**Scope:** Strategy → Decision → Execution → Learning
-**Status:** Production-ready (Core, Governance, Experimentation)
+Here is the fully updated, comprehensive **Database Technical Reference Manual** for the LEO Data Activation & Alert Center. This document serves as the single source of truth for the database schema, architectural patterns, and data flows.
 
 ---
 
-## 0. Executive Summary
+# LEO Data Activation & Alert Center – Database Technical Reference
 
-LEO Activation is **not** a campaign tool and **not** a message sender.
-
-It is a **decision system** designed to repeatedly and provably answer one question:
-
-> *Given the current state of a customer and the business,
-> what is the correct action to take — and can we explain and audit that decision later?*
-
-The database schema enforces this at the **structural level**, not by convention.
-
-The system guarantees:
-
-* **Correctness** – actions follow explicit rules and data
-* **Explainability** – every action has a recorded reason
-* **Auditability** – every decision and message is traceable
-* **Reproducibility** – same inputs always yield the same outcomes
-
-If any of these are missing, the system is **not** activation.
+**Version:** 2.0 (Unified Schema)
+**Database Engine:** PostgreSQL 16+
+**Architecture:** Multi-tenant, Event-Driven, Hybrid (SQL + Vector + Graph)
+**Primary Context:** High-frequency decisioning, AI Agent reasoning, and Financial Alerting.
 
 ---
 
-## 1. Entity Count & Coverage
+## 1. System Architecture Overview
 
-**Total tables: 19**
+The database is designed not just for storage, but as an active participant in the decision loop. It enforces strict separation of concerns across four layers:
 
-| Domain                | Tables                                                       |
-| --------------------- | ------------------------------------------------------------ |
-| Core Tenancy          | `tenant`                                                     |
-| Profile & Identity    | `cdp_profiles`                                               |
-| Consent & Governance  | `consent_management`                                         |
-| Strategy & Definition | `campaign`, `marketing_event`                                |
-| Template System       | `message_templates`                                          |
-| Decision Layer        | `agent_task`                                                 |
-| Execution Truth       | `delivery_log`                                               |
-| Segmentation          | `segment_snapshot`, `segment_snapshot_member`                |
-| Experimentation       | `activation_experiments`                                     |
-| Attribution           | `activation_outcomes`                                        |
-| Behavioral Truth      | `behavioral_events`                                          |
-| Data Lineage          | `data_sources`                                               |
-| Alert & Intelligence  | `instruments`, `market_snapshot`, `alert_rules`, `news_feed` |
-| Infrastructure        | `embedding_job`                                              |
+1. **Strategy Layer:** Where business intent is defined (`campaign`, `alert_rules`).
+2. **Identity Layer:** The unified view of the customer (`cdp_profiles`).
+3. **Intelligence Layer:** Where AI and logic live (`agent_task`, `news_feed`, `market_snapshot`).
+4. **Execution Layer:** The immutable record of what happened (`delivery_log`, `behavioral_events`).
 
-This is the **minimum complete set** for a real activation system.
-Fewer tables → missing capability.
-More tables → unnecessary coupling.
+### 1.1 Key Technical Patterns
+
+* **Absolute Multi-Tenancy:** Isolation is enforced at the row level via RLS policies.
+* **Vector Native:** Embeddings are first-class citizens for RAG (Retrieval-Augmented Generation).
+* **Deterministic IDs:** Critical logic uses content-hashing (SHA256) for IDs to ensure idempotency.
+* **Append-Only Truth:** Historical data (snapshots, logs, behavior) is never overwritten.
 
 ---
 
-## 2. Core Design Principles
+## 2. Infrastructure & Setup
 
-### 2.1 Absolute Multi-Tenancy
+### 2.1 Required Extensions
 
-* Every tenant-scoped table contains `tenant_id`
-* Row Level Security (RLS) is enforced at the database layer
-* Application logic is **not trusted** to enforce isolation
+The system relies on specific PostgreSQL extensions to function.
 
-Session context:
+| Extension | Purpose |
+| --- | --- |
+| **`pgcrypto`** | Generates `UUIDv4` and handles SHA256 hashing for deterministic IDs. |
+| **`vector`** | Enables high-dimensional vector storage (1536 dim) for Semantic Search. |
+| **`citext`** | "Case-Insensitive Text" for robust email and username comparisons. |
+| **`age`** | Apache AGE for Graph Database capabilities (Nodes/Edges within Postgres). |
+| **`postgis`** | Spatial data support for geo-targeting. |
 
-```sql
-SET app.current_tenant_id = '<tenant-uuid>';
-```
+### 2.2 Global Utilities
 
-If unset → queries return **0 rows** (fail-closed).
-
----
-
-### 2.2 Root vs Tenant-Scoped Tables
-
-Not all tables are equal.
-
-* **Root system table:** `tenant`
-* **Tenant-scoped tables:** everything else
-
-The `tenant` table **must not depend on tenant context** for writes.
-All other tables **must**.
-
-This avoids circular dependencies and bootstrap deadlocks.
+* **`update_timestamp()`**: Trigger function applied to all mutable tables to auto-update the `updated_at` column.
+* **`app.current_tenant_id`**: Session variable required for all queries. If unset, RLS hides all data.
 
 ---
 
-### 2.3 Append Truth, Never Rewrite History
+## 3. Schema Reference: Core & Identity
 
-* Decisions are logged, not overwritten
-* Deliveries are immutable
-* Behavioral events are append-only
-* Corrections are new facts, not edits
+### 3.1 `tenant` (Root Entity)
 
-History is preserved by design.
+The root of the multi-tenant architecture. Integrates directly with Keycloak.
 
----
+| Field | Type | Description |
+| --- | --- | --- |
+| `tenant_id` | `UUID` (PK) | Global unique identifier. |
+| `tenant_name` | `TEXT` | Human-readable name (unique per realm). |
+| `keycloak_realm` | `TEXT` | The Keycloak Realm this tenant belongs to. |
+| `keycloak_client_id` | `TEXT` | The OIDC Client ID. |
+| `metadata` | `JSONB` | Custom config (branding, limits). |
+| `status` | `TEXT` | `active`, `suspended`, `archived`. |
 
-### 2.4 Four-Layer Activation Model
+### 3.2 `cdp_profiles` (The "User")
 
-| Layer           | Responsibility         | Tables                                 |
-| --------------- | ---------------------- | -------------------------------------- |
-| Strategy        | Business intent        | `campaign`                             |
-| Definition      | What *can* be done     | `marketing_event`, `message_templates` |
-| Decision        | Why it was chosen      | `agent_task`                           |
-| Execution Truth | What actually happened | `delivery_log`                         |
+The unified customer profile. Synced from upstream sources (e.g., ArangoDB) but enriched locally with AI vectors and snapshots.
 
-This separation is mandatory.
+* **Constraint:** `segment_snapshots` is **append-only** (enforced by `prevent_snapshot_removal` trigger).
 
----
-
-## 3. Core Entities
-
-### 3.1 `tenant` – System Root
-
-**Purpose**
-
-* Legal, billing, and isolation boundary
-* Integration anchor for Keycloak SSO
-
-**Characteristics**
-
-* Root table
-* Partially exempt from tenant-based RLS
-* No user data
-* No authentication logic
-
-Tenant creation is **admin-controlled**, not user-driven.
+| Field | Type | Description |
+| --- | --- | --- |
+| `tenant_id` | `UUID` | Partition Key. |
+| `profile_id` | `TEXT` (PK) | The Source ID (e.g., `U_NAM_INVESTOR`). |
+| `identities` | `JSONB` | List of all known IDs (e.g., `["email:a@b.com", "crm:123"]`). |
+| `primary_email` | `CITEXT` | Normalized email for lookups. |
+| `living_location` | `TEXT` | Location string (e.g., "Vietnam"). |
+| `job_titles` | `JSONB` | Array of titles (e.g., `["Investor", "Founder"]`). |
+| `segments` | `JSONB` | Current segment membership. |
+| `segment_snapshots` | `JSONB` | **Audit Trail:** Historical segment membership over time. |
+| `portfolio_snapshot` | `JSONB` | Current asset holdings (Cash, Positions). |
+| `portfolio_risk_score` | `NUMERIC` | 0.00 - 1.00 AI-evaluated risk tolerance. |
+| `interest_embedding` | `VECTOR(1536)` | **AI Memory:** Semantic summary of user interests. |
 
 ---
 
-### 3.2 `cdp_profiles` – Unified Customer Snapshot
+## 4. Schema Reference: Strategy & Definition
 
-**Purpose**
+### 4.1 `campaign`
 
-* Canonical representation of a customer
-* Not a “user” table
+High-level business initiatives.
 
-**Contains**
+| Field | Type | Description |
+| --- | --- | --- |
+| `campaign_id` | `TEXT` (PK) | Internal ID. |
+| `campaign_code` | `TEXT` | Human-readable ref (e.g., `SUMMER-2026`). Unique per tenant. |
+| `objective` | `TEXT` | `AWARENESS`, `CONVERSION`, etc. |
+| `status` | `TEXT` | `active`, `draft`, `paused`. |
 
-* Identities and contact points
-* Segment membership
-* Behavioral aggregates
-* Vector embeddings for AI reasoning
+### 4.2 `marketing_event`
 
-Profiles are **re-evaluated**, not mutated.
+Specific tactical actions within a campaign.
 
----
+* **Partitioning:** Hash-Partitioned by `tenant_id` (16 partitions) for scale.
 
-### 3.3 `consent_management` – Legal Enforcement
+| Field | Type | Description |
+| --- | --- | --- |
+| `event_id` | `TEXT` (PK) | Unique event identifier. |
+| `event_type` | `TEXT` | `BROADCAST`, `TRIGGER`, `API`. |
+| `event_channel` | `TEXT` | `EMAIL`, `SMS`, `PUSH`. |
+| `embedding` | `VECTOR(1536)` | **AI Context:** Semantic vector of the event description. |
 
-**Purpose**
+### 4.3 `message_templates`
 
-* Enforce communication rights per profile × channel
+Multi-channel content definitions. Templates are blueprints, not final messages.
 
-**Key rules**
-
-* Checked **before** any activation
-* Overrides campaigns, agents, and business logic
-
-If consent is missing, the system **must not act**.
-
----
-
-## 4. Strategy & Activation Definition
-
-### 4.1 `campaign` – Business Intent
-
-Represents **why** activation exists.
-
-* High-level objective
-* No templates
-* No execution logic
-* No delivery records
-
-Examples:
-
-* Retention of churn-risk users
-* Upsell premium features
+| Field | Type | Description |
+| --- | --- | --- |
+| `template_id` | `UUID` (PK) | Unique ID. |
+| `channel` | `TEXT` | `email`, `zalo_oa`, `web_push`, `whatsapp`. |
+| `body_template` | `TEXT` | The raw content (Jinja2/Liquid/Handlebars). |
+| `template_engine` | `TEXT` | Default `jinja2`. |
+| `version` | `INT` | Version control for templates. |
 
 ---
 
-### 4.2 `marketing_event` – Action Definition
+## 5. Schema Reference: Alert Center (Financial)
 
-Represents **what may happen**.
+### 5.1 `instruments`
 
-Defines:
+Reference data for tradable assets.
 
-* Channel
-* Timing
-* Associated template
-* Embedding for AI understanding
+| Field | Type | Description |
+| --- | --- | --- |
+| `symbol` | `VARCHAR` | Ticker symbol (e.g., `AAPL`, `BTC-USD`). |
+| `type` | `VARCHAR` | `STOCK`, `CRYPTO`, `FX`. |
+| `tenant_id` | `UUID` | If NULL, it is a global asset. If set, it's private. |
 
-One campaign → many events.
+### 5.2 `market_snapshot`
 
----
+Real-time pricing data. High-throughput table.
 
-### 4.3 `message_templates` – Message Intent
+| Field | Type | Description |
+| --- | --- | --- |
+| `symbol` | `VARCHAR` (PK) | The asset ticker. |
+| `price` | `NUMERIC` | Current market price. |
+| `change_percent` | `NUMERIC` | 24h change %. |
 
-**Purpose**
+### 5.3 `alert_rules`
 
-* Canonical, reusable message definitions
+User-defined or AI-generated monitoring rules.
 
-**Supports**
+* **Identity Generation:** `rule_id` is a SHA256 hash of (Tenant + User + Symbol + Logic). This ensures **Idempotency** (preventing duplicate alerts).
 
-* Email
-* Zalo OA
-* Web Push
-* App Push
-* WhatsApp
-* Telegram
-* Future channels without schema change
+| Field | Type | Description |
+| --- | --- | --- |
+| `rule_id` | `VARCHAR` (PK) | **Hash:** Deterministic ID. |
+| `profile_id` | `TEXT` | The user who owns this alert. |
+| `symbol` | `VARCHAR` | Target asset. |
+| `condition_logic` | `JSONB` | e.g., `{"operator": ">", "value": 150}`. |
+| `source` | `ENUM` | `USER_MANUAL` or `AI_AGENT`. |
 
-**Characteristics**
+### 5.4 `news_feed`
 
-* Versioned
-* Language-aware
-* Channel-agnostic
-* Metadata-driven for provider quirks
+Market news ingestion with AI enrichment.
 
-Templates define **possibility**, not execution.
-
----
-
-## 5. Decision Layer (Intelligence)
-
-### 5.1 `agent_task`
-
-**Purpose**
-
-* Record **why** a specific action was chosen
-
-Stores:
-
-* Reasoning summary
-* Reasoning trace
-* Inputs considered
-* Outcome selected
-
-If this table does not exist, the system is **not intelligent**, only automated.
+| Field | Type | Description |
+| --- | --- | --- |
+| `news_id` | `BIGSERIAL` | Primary Key. |
+| `content_embedding` | `VECTOR(1536)` | **Hybrid Search:** Used for semantic news retrieval. |
+| `sentiment_score` | `NUMERIC` | AI-extracted sentiment (0.00 to 1.00). |
+| `related_symbols` | `VARCHAR[]` | Assets mentioned in the news. |
 
 ---
 
-## 6. Execution Truth
+## 6. Schema Reference: Intelligence & Execution
 
-### 6.1 `delivery_log`
+### 6.1 `agent_task` (The "Brain")
 
-**Purpose**
+Stores the AI's decision-making process ("Chain of Thought").
 
-* Single source of truth for outbound actions
+| Field | Type | Description |
+| --- | --- | --- |
+| `task_id` | `TEXT` (PK) | Unique Task ID. |
+| `reasoning_trace` | `JSONB` | **CoT:** The step-by-step logic the AI used. |
+| `reasoning_summary` | `TEXT` | Final summary of why an action was taken. |
+| `related_news_id` | `BIGINT` | Link to the news item that triggered this task. |
 
-Records:
+### 6.2 `delivery_log` (The "Hand")
 
-* Who was contacted
-* Through which channel
-* Rendered subject and body
-* Provider response
-* Timestamp
+The authoritative record of sent messages.
 
-If it is not in `delivery_log`, **it did not happen**.
+| Field | Type | Description |
+| --- | --- | --- |
+| `delivery_id` | `BIGSERIAL` | Primary Key. |
+| `event_id` | `TEXT` | Link to Marketing Event. |
+| `profile_id` | `TEXT` | Recipient. |
+| `delivery_status` | `TEXT` | `sent`, `delivered`, `failed`. |
+| `provider_response` | `JSONB` | Raw payload from the provider (e.g., SendGrid/Twilio). |
 
----
+### 6.3 `behavioral_events` (The "Ear")
 
-## 7. Segmentation & Reproducibility
+Captures user reactions.
 
-### 7.1 `segment_snapshot`
+* **Partitioning:** Range-Partitioned by **Time** (Monthly).
+* **Purpose:** Feedback loop for AI training.
 
-### 7.2 `segment_snapshot_member`
-
-**Purpose**
-
-* Freeze segment membership at decision time
-
-Required for:
-
-* Deterministic replay
-* AI audit
-* Attribution correctness
-
-Live segments without snapshots are **not allowed** in activation.
-
----
-
-## 8. Experimentation & Learning
-
-### 8.1 `activation_experiments`
-
-**Purpose**
-
-* Measure effectiveness of activation decisions
-
-Supports:
-
-* A/B testing
-* Multi-variant tests
-* Bandit learning
-
-Tracks:
-
-* Exposure counts
-* Conversion counts
-
-No measurement → no learning → no intelligence.
+| Field | Type | Description |
+| --- | --- | --- |
+| `event_type` | `TEXT` | `VIEW`, `CLICK`, `CONVERT`. |
+| `entity_type` | `TEXT` | `NEWS`, `ALERT`, `CAMPAIGN`. |
+| `sentiment_val` | `INT` | +1 (Positive), -1 (Negative), 0 (Neutral). |
 
 ---
 
-## 9. Attribution (Why Outcomes Exist)
+## 7. Data Flows
 
-### 9.1 `activation_outcomes`
+### 7.1 The Alert Triggering Flow
 
-**Purpose**
+1. **Ingest:** `market_snapshot` updates via external feed.
+2. **Match:** Worker polls `alert_rules` where `status='ACTIVE'` and matches symbol/condition.
+3. **Trace:** `agent_task` is created to validate the alert relevance (optional AI check).
+4. **Execute:** If valid, `delivery_log` is written (Notification sent).
+5. **Record:** Alert status may update to `TRIGGERED`.
 
-* Explicitly link a **delivery** to an **outcome**
+### 7.2 The AI Enrichment Flow
 
-Answers:
-
-> *Did this specific message cause this specific result?*
-
-Why this is separate from `behavioral_events`:
-
-* Behavioral events = raw facts
-* Outcomes = interpreted attribution
-
-Attribution logic evolves; raw behavior does not.
-
----
-
-## 10. Behavioral & External Intelligence
-
-### 10.1 `behavioral_events`
-
-* Append-only
-* Time-partitioned
-* High volume
-* User-centric
-
-Feeds:
-
-* Segmentation
-* Agent reasoning
-* Outcome attribution
+1. **New Profile:** User inserted into `cdp_profiles`.
+2. **Async Job:** `embedding_job` created for the user.
+3. **Process:** Worker reads `job_titles`, `interests`, `behavioral_events`.
+4. **Vectorize:** Generates 1536-dim vector.
+5. **Update:** Writes to `cdp_profiles.interest_embedding`.
 
 ---
 
-### 10.2 Alert & Market Intelligence
+## 8. Security & Compliance Model
 
-| Table             | Purpose          |
-| ----------------- | ---------------- |
-| `instruments`     | Tracked entities |
-| `market_snapshot` | Current state    |
-| `alert_rules`     | Trigger logic    |
-| `news_feed`       | External context |
+### 8.1 Row Level Security (RLS)
 
-These tables enable **context-aware activation**, not blind messaging.
+* **Policy:** `tenant_select_policy`
+* **Mechanism:** `USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)`
+* **Effect:** A user/service can strictly ONLY see rows matching the session's tenant ID.
 
----
+### 8.2 Consent Management (`consent_management`)
 
-## 11. Data Lineage & Observability
-
-### 11.1 `data_sources`
-
-Tracks:
-
-* Where data originates
-* Sync frequency
-* Ingestion health
-
-If data origin is unknown, AI decisions are **not trustworthy**.
+* **Granularity:** Per `profile_id` + `channel`.
+* **Legal Basis:** Stores strict `legal_basis` (GDPR) and `source` of consent.
+* **Enforcement:** Execution services must join against this table before inserting into `delivery_log`.
 
 ---
 
-## 12. Security & RLS Model (Summary)
+## 9. Performance Features
 
-* RLS enforced on all tenant-scoped tables
-* Session variable `app.current_tenant_id` is mandatory
-* `tenant` table:
+### 9.1 Partitioning Strategy
 
-  * RLS enabled
-  * SELECT restricted
-  * INSERT / UPDATE allowed for bootstrap/admin paths
+* **Marketing Events:** Hash Partitioned (Modulus 16). optimized for uniform distribution of massive campaign definitions.
+* **Behavioral Events:** Time Partitioned (Monthly). Optimized for dropping old data (data retention) and query locality (hot recent data).
 
-Security is enforced by **structure**, not discipline.
+### 9.2 Indexes
 
----
-
-## 13. Canonical Activation Flow
-
-```
-[ Behavioral Events ]
-          ↓
-[ CDP Profiles (Re-evaluated) ]
-          ↓
-[ Segment Snapshot ]
-          ↓
-[ Agent Task (Decision + Reasoning) ]
-          ↓
-[ Marketing Event + Message Templates ]
-          ↓
-[ Delivery Log ]
-          ↓
-[ Activation Outcomes ]
-          ↓
-[ Activation Experiments ]
-
-```
-
-Every arrow is traceable.
-Every decision is explainable.
-
----
-
-## 14. What This Schema Explicitly Does NOT Allow
-
-This schema is designed to stop common failures by design.
-
-It does **not allow**:
-
-* Campaigns that send messages directly without a decision step
-* Messages generated at send time without being persisted
-* Messaging providers acting as the source of truth
-* AI decisions that cannot be replayed or explained
-* Sending first and thinking about results later
-
-> **LEO Activation treats every message as a decision that must be owned.**
-
-That ownership is enforced **inside the database**, where it cannot be bypassed by application code.
-
----
-
-## 15. Final Architectural Statement
-
-LEO Activation is a system that **takes responsibility for its actions**.
-
-This schema ensures that responsibility is:
-
-* Explicit
-* Enforced
-* Auditable
-* Durable
-* Scalable 
-
-Anything less is not activation — it is automation without accountability.
+* **Vector:** HNSW Index on `news_feed` and `cdp_profiles` for fast cosine similarity.
+* **JSONB:** GIN Indexes on `cdp_profiles.identities` and `segments` for fast attribute lookup.
+* **Graph:** AGE Catalog enabled for graph traversals.
