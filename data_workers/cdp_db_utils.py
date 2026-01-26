@@ -2,6 +2,9 @@ import logging
 from typing import Any, Dict, List
 from pathlib import Path
 
+import psycopg
+from psycopg.rows import dict_row
+
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
 
@@ -101,4 +104,33 @@ def get_subscription_from_cdp(db_connection: Any, segment_name: str) -> List[Dic
 
     except Exception as e:
         logger.error(f"[ArangoDB] Subscription Query failed: {e}")
+        return []
+    
+
+def get_users_by_ticker_interest(
+    conn: psycopg.Connection, 
+    ticker: str, 
+    min_score: float
+) -> List[Dict[str, Any]]:
+    """
+    Fetches all users interested in a specific ticker with a score above min_score.
+    """
+    query = """
+        SELECT user_id, accumulated_weight, last_interaction
+        FROM user_ticker_affinity
+        WHERE ticker = %s 
+        AND accumulated_weight >= %s
+        ORDER BY accumulated_weight DESC;
+    """
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (ticker, min_score))
+            # row_factory=dict_row ensures this returns a list of dictionaries
+            # e.g., [{'user_id': 'abc', 'accumulated_weight': 10.5, ...}, ...]
+            results = cur.fetchall()
+            return results
+            
+    except Exception as e:
+        print(f"❌ Error fetching interested users: {e}")
         return []
