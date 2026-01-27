@@ -13,22 +13,25 @@ from data_utils.settings import DatabaseSettings
 logger = logging.getLogger("agentic_tools.data_enrichment")
 
 HALF_LIFE_DAYS = 7.0
-SCORE_THRESHOLD = 1.0 # Delete if score drops below this
+SCORE_THRESHOLD = 0.05 # Delete if score drops below this
+TARGET_SEGMENT = "Active in last 1 months"
 
+# CONSTANT: The "Half-Way" Point.
+# At 100 raw points, the user has a 0.5 (50%) interest score.
+# At 1000 raw points, the user has a 0.9 (90%) interest score.
+SCORING_K_FACTOR = 100.0
 
 # --- 4. ARANGODB FETCHING LOGIC ---
 def get_batch_scoring_data(settings: DatabaseSettings, start_time_iso: str, end_time_iso: str) -> List[Dict[str, Any]]:
     """
-    Fetches aggregated event scores for users in the target segment.
+    Fetches events and resolves them to the Profile _key (profile_id).
     """
     db = get_arango_db(settings)
     if not db:
         return []
     
-    TARGET_SEGMENT = "Active in last 1 months"
-
     try:
-        # 1. Resolve Segment ID
+        # A. Resolve Segment Name to ID
         segment_query = "FOR s IN cdp_segment FILTER s.name == @segment_name RETURN s._key"
         cursor_seg = db.aql.execute(segment_query, bind_vars={'segment_name': TARGET_SEGMENT})
         found_ids = [s for s in cursor_seg]
@@ -39,44 +42,42 @@ def get_batch_scoring_data(settings: DatabaseSettings, start_time_iso: str, end_
         
         target_segment_id = found_ids[0]
         
-        # 2. Main Aggregation Query
-        # STRICTLY filters out events without tickers (login, page-view, etc)
+        # B. Main Query: Event -> Profile (Get _key) -> Metric
         scoring_query = """
         FOR event IN cdp_trackingevent
-            // 1. Filter by Time Window FIRST (Uses Index on createdAt)
+            // 1. Time Window Filter
             FILTER event.createdAt >= @start_time
             FILTER event.createdAt < @end_time
             
-            // 2. Strict Data Validation (Filter noise early)
+            // 2. Data Validation
             FILTER HAS(event.eventData, 'instrument_id') 
             FILTER event.eventData.instrument_id != null 
             FILTER event.eventData.instrument_id != ""
 
-            // 3. Join with Profile to check Segment membership
-            // We use the 'fingerprintId' from the event to look up the profile directly
+            // 3. Join Profile (Link via fingerprintId, but select _key)
             FOR profile IN cdp_profile
                 FILTER profile.fingerprintId == event.fingerprintId
                 FILTER @segment_id IN profile.inSegments[*].id
                 
-                // 4. Get Weight from Metric
+                // 4. Get Weight
                 FOR metric IN cdp_eventmetric
                     FILTER metric.eventName == event.metricName
                     
-                    // 5. Aggregate
+                    // 5. Aggregate by Profile Key + Ticker
                     COLLECT 
-                        user_id = profile.fingerprintId, 
+                        pid = profile._key, 
                         ticker = event.eventData.instrument_id
                     AGGREGATE 
                         total_points = SUM(metric.score),
                         last_seen = MAX(event.createdAt)
                         
                     RETURN {
-                        "user_id": user_id,
+                        "profile_id": pid,
                         "ticker": ticker,
                         "points": total_points,
                         "last_seen": last_seen
                     }
-            """
+        """
         
         bind_vars = {
             'segment_id': target_segment_id,
@@ -87,7 +88,7 @@ def get_batch_scoring_data(settings: DatabaseSettings, start_time_iso: str, end_
         cursor = db.aql.execute(scoring_query, bind_vars=bind_vars)
         results = [r for r in cursor]
         
-        logger.info(f"📥 ArangoDB: Found {len(results)} User-Ticker pairs to update.")
+        logger.info(f"📥 ArangoDB: Found {len(results)} Profile-Ticker pairs to update.")
         return results
 
     except Exception as e:
@@ -112,54 +113,56 @@ def run_batch_scoring_job(settings: DatabaseSettings, start_time: str, end_time:
     try:
         with conn.cursor() as cur:
             for entry in batch_data:
-                user_id = entry['user_id']
+                profile_id = entry['profile_id']
                 ticker = entry['ticker']
-                incoming_points = entry['points']
+                incoming_points = entry['points'] # Raw points (e.g. 5.0)
                 
-                # 1. Parse Arango Time (Timezone Aware - UTC)
-                # Arango returns "2023-10-27T10:00:00Z" -> Python datetime with timezone
                 last_event_time = datetime.datetime.fromisoformat(entry['last_seen'].replace("Z", "+00:00"))
 
-                # 2. Fetch Existing
-                cur.execute("""
-                    SELECT accumulated_weight, last_interaction 
-                    FROM user_ticker_affinity 
-                    WHERE user_id = %s AND ticker = %s
-                """, (user_id, ticker))
+                # 1. Fetch Existing RAW Score
+                cur.execute("SELECT raw_score, last_interaction FROM user_ticker_affinity WHERE profile_id = %s AND ticker = %s", (profile_id, ticker))
+                record = cur.fetchone()
                 
-                record = cur.fetchone() # Returns Dict or None
+                final_raw_score = 0.0
                 
                 if record:
                     # UPDATE path
-                    current_weight = record['accumulated_weight']
+                    current_raw = record['raw_score']
                     prev_interaction = record['last_interaction']
                     
-                    # Ensure Postgres time is Timezone Aware ---
-                    # Postgres returns naive datetime by default. We assume it was stored as UTC.
                     if prev_interaction.tzinfo is None:
                         prev_interaction = prev_interaction.replace(tzinfo=datetime.timezone.utc)
-                    # --- FIX END ---
                     
-                    # Calculate Decay
+                    # 2. Apply Time Decay to RAW Score
                     time_diff = last_event_time - prev_interaction
                     days_elapsed = max(time_diff.total_seconds() / 86400.0, 0)
+                    decay_factor = 0.5 ** (days_elapsed / settings.HALF_LIFE_DAYS)
                     
-                    decay_factor = 0.5 ** (days_elapsed / HALF_LIFE_DAYS)
-                    new_weight = (current_weight * decay_factor) + incoming_points
+                    decayed_raw = current_raw * decay_factor
                     
-                    cur.execute("""
-                        UPDATE user_ticker_affinity 
-                        SET accumulated_weight = %s, last_interaction = %s, updated_at = NOW()
-                        WHERE user_id = %s AND ticker = %s
-                    """, (new_weight, last_event_time, user_id, ticker))
-                    
+                    # 3. Add New Points
+                    final_raw_score = decayed_raw + incoming_points
                 else:
                     # INSERT path
+                    final_raw_score = incoming_points
+
+                # 4. Calculate Normalized Interest Score (0 to 1)
+                # Formula: Raw / (Raw + K)
+                final_interest_score = final_raw_score / (final_raw_score + SCORING_K_FACTOR)
+                
+                # 5. Upsert Both Scores
+                if record:
+                    cur.execute("""
+                        UPDATE user_ticker_affinity 
+                        SET raw_score = %s, interest_score = %s, last_interaction = %s, updated_at = NOW()
+                        WHERE profile_id = %s AND ticker = %s
+                    """, (final_raw_score, final_interest_score, last_event_time, profile_id, ticker))
+                else:
                     cur.execute("""
                         INSERT INTO user_ticker_affinity 
-                        (user_id, ticker, accumulated_weight, last_interaction)
-                        VALUES (%s, %s, %s, %s)
-                    """, (user_id, ticker, incoming_points, last_event_time))
+                        (profile_id, ticker, raw_score, interest_score, last_interaction)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (profile_id, ticker, final_raw_score, final_interest_score, last_event_time))
             
             # Commit transaction for the whole batch
             conn.commit()
@@ -180,19 +183,22 @@ def init_affinity_table(settings: DatabaseSettings):
         with conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_ticker_affinity (
-                    user_id VARCHAR(100) NOT NULL,
+                    profile_id VARCHAR(100) NOT NULL,
                     ticker VARCHAR(20) NOT NULL,
-                    accumulated_weight FLOAT DEFAULT 0,
+                    raw_score FLOAT DEFAULT 0,       -- The actual accumulated points (e.g., 500.0)
+                    interest_score FLOAT DEFAULT 0,  -- The normalized 0-1 score (e.g., 0.83)
                     last_interaction TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (user_id, ticker)
+                    PRIMARY KEY (profile_id, ticker)
                 )
             """)
-            # Create Index for fast dispatch queries
+            
+            # Create Index for fast lookups
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_affinity_ticker 
                 ON user_ticker_affinity(ticker)
             """)
+            
         conn.commit()
         logger.info("✅ Table 'user_ticker_affinity' verified.")
     except Exception as e:
@@ -212,13 +218,11 @@ def run_garbage_collection(settings: DatabaseSettings):
         
         query = """
             DELETE FROM user_ticker_affinity
-            WHERE (
-                accumulated_weight * POWER(0.5, EXTRACT(EPOCH FROM (NOW() - last_interaction)) / (86400.0 * %s))
-            ) < %s;
+            WHERE interest_score < %s;
         """
         
         with conn.cursor() as cur:
-            cur.execute(query, (HALF_LIFE_DAYS,SCORE_THRESHOLD))
+            cur.execute(query, (SCORE_THRESHOLD,))
             deleted_count = cur.rowcount
             
         logger.info(f"🧹 Garbage Collection: Removed {deleted_count} rows (Score < {SCORE_THRESHOLD}).")
@@ -245,7 +249,7 @@ if __name__ == "__main__":
     # Logic: If now is 10:45, window is 09:00:00 -> 10:00:00
     now = datetime.datetime.now(datetime.timezone.utc)
     window_end = now.replace(minute=0, second=0, microsecond=0)
-    window_start = window_end - datetime.timedelta(hours=150)
+    window_start = window_end - datetime.timedelta(hours=1)
     
     start_str = window_start.isoformat()
     end_str = window_end.isoformat()
