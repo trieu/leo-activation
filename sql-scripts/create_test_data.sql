@@ -208,3 +208,77 @@ SELECT * FROM cypher('investing_knowledge_graph', $$
     MERGE (n)-[r:IMPACTS]->(s)
     SET r.confidence = 0.9
 $$) as (a agtype);
+
+-- product_recommendations
+INSERT INTO product_recommendations (
+    tenant_id,
+    profile_id,
+    journey_map_id,
+    journey_stage_id,
+    recommendation_context,
+    product_id,
+    product_type,
+    raw_score,
+    interest_score,
+    rank_position,
+    recommendation_model,
+    model_version,
+    reason_codes,
+    last_interaction_at
+) VALUES
+(
+    'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+    'p_alice',
+    'investment_journey',
+    'new-customer',
+    'homepage',
+    'AAPL',
+    'stock',
+    520.0000,
+    0.8400,
+    1,
+    'rule_v1',
+    'v1.0',
+    '{"signals":["viewed_stock","high_volume"],"confidence":"high"}',
+    NOW() - INTERVAL '1 day'
+),
+(
+   'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+    'p_bob',
+    'investment_journey',
+    'new-customer',
+    'homepage',
+    'TSLA',
+    'stock',
+    410.0000,
+    0.7600,
+    2,
+    'rule_v1',
+    'v1.0',
+    '{"signals":["searched_ev","price_momentum"],"confidence":"medium"}',
+    NOW() - INTERVAL '2 days'
+),
+(
+    'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+    'p_charlie',
+    'investment_journey',
+    'returning-customer',
+    'email',
+    'SP500_ETF',
+    'fund',
+    300.0000,
+    0.6900,
+    1,
+    'ml_cf_v3',
+    'v3.2',
+    '{"signals":["portfolio_similarity","risk_profile"],"confidence":"high"}',
+    NOW() - INTERVAL '3 hours'
+);
+
+SELECT product_id, interest_score, rank_position
+FROM product_recommendations
+WHERE tenant_id = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'
+  AND profile_id = 'p_alice'
+  AND journey_stage_id = 'new-customer'
+ORDER BY interest_score DESC
+LIMIT 5;

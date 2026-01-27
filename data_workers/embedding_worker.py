@@ -26,7 +26,7 @@ def fetch_job(conn):
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             WITH job AS (
-                SELECT job_id, tenant_id, event_id
+                SELECT job_id, tenant_id, marketing_event_id
                 FROM embedding_job
                 WHERE status = 'pending'
                 FOR UPDATE SKIP LOCKED
@@ -47,8 +47,8 @@ def process_job(conn, job):
         cur.execute("""
             SELECT event_name, event_description
             FROM marketing_event
-            WHERE tenant_id = %s AND event_id = %s;
-        """, (job["tenant_id"], job["event_id"]))
+            WHERE tenant_id = %s AND marketing_event_id = %s;
+        """, (job["tenant_id"], job["marketing_event_id"]))
 
         row = cur.fetchone()
         if not row:
@@ -62,8 +62,8 @@ def process_job(conn, job):
             SET embedding = %s,
                 embedding_status = 'ready',
                 embedding_updated_at = now()
-            WHERE tenant_id = %s AND event_id = %s;
-        """, (embedding, job["tenant_id"], job["event_id"]))
+            WHERE tenant_id = %s AND marketing_event_id = %s;
+        """, (embedding, job["tenant_id"], job["marketing_event_id"]))
 
         cur.execute("""
             UPDATE embedding_job

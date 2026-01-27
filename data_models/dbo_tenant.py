@@ -98,13 +98,13 @@ class Tenant(Base, TimestampMixin):
 # Tenant Context Resolver (PostgreSQL RLS)
 # ---------------------------------------------------------------------
 
-def get_default_tenant_id(pg_connection: psycopg.Connection = None) -> uuid.UUID:
+def get_default_tenant_id(pg_connection: psycopg.Connection = None, settings: DatabaseSettings =  DatabaseSettings()) -> uuid.UUID:
     """
     Utility to get the default tenant ID from the database.
     """
     if pg_connection is None:
         # Lazy init connection if not provided
-        pg_connection = DatabaseSettings().get_pg_connection()
+        pg_connection = settings.get_pg_connection()
     
     with pg_connection.cursor() as cursor:
         cursor.execute(
@@ -115,7 +115,7 @@ def get_default_tenant_id(pg_connection: psycopg.Connection = None) -> uuid.UUID
         if not result:
             raise RuntimeError(f"Default tenant '{DEFAULT_TENANT_NAME}' not found in database.")
         
-        return result[0]
+        return result['tenant_id']
 
 def resolve_tenant_id(session: Session, tenant_name: str = DEFAULT_TENANT_NAME) -> uuid.UUID:
     """

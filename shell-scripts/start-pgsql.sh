@@ -18,7 +18,7 @@ TARGET_DB="leo_activation_db"
 HOST_PORT=5435
 
 # --- SQL schema config ---
-SCHEMA_VERSION=260125
+SCHEMA_VERSION=260127
 SCHEMA_DESCRIPTION="upgrade marketing_event + AI embedding pipeline"
 SQL_FILE_PATH="./sql-scripts/schema.sql"
 
@@ -237,6 +237,10 @@ TABLES=(
 
   # --- Behavioral Feedback Loop ---
   behavioral_events
+  event_metrics
+
+  # --- Recommendations ---
+  product_recommendations
 
   # --- Data Lineage / System ---
   data_sources

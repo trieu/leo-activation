@@ -175,7 +175,7 @@ def do_alerting_all_matched_profile(session: Session, tenant_id: uuid.UUID):
                     
                     log = DeliveryLog(
                         tenant_id=tenant_id,
-                        event_id=f"ALERT_{rule.rule_id}_{datetime.now().timestamp()}",
+                        marketing_event_id=f"ALERT_{rule.rule_id}_{datetime.now().timestamp()}",
                         profile_id=profile.profile_id,
                         channel="email",
                         delivery_status="SENT", 
@@ -193,7 +193,7 @@ def do_alerting_all_matched_profile(session: Session, tenant_id: uuid.UUID):
                     
                     log = DeliveryLog(
                         tenant_id=tenant_id,
-                        event_id=f"ALERT_{rule.rule_id}_{datetime.now().timestamp()}",
+                        marketing_event_id=f"ALERT_{rule.rule_id}_{datetime.now().timestamp()}",
                         profile_id=profile.profile_id,
                         channel="web_push",
                         delivery_status="SENT",

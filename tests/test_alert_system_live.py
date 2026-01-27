@@ -152,7 +152,7 @@ def verify_results(session):
     print(f"Total Logs Found: {len(logs)}")
     
     for log in logs:
-        print(f" [OK] {log.channel.upper()} | Status: {log.delivery_status} | Event: {log.event_id}")
+        print(f" [OK] {log.channel.upper()} | Status: {log.delivery_status} | Event: {log.marketing_event_id}")
 
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":

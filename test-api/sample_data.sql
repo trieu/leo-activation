@@ -9,7 +9,7 @@
 --
 -- Assumptions:
 --   - Run as postgres or migration user (bypass RLS)
---   - marketing_event trigger generates event_id
+--   - marketing_event trigger generates marketing_event_id
 -- ============================================================
 
 BEGIN;
@@ -27,7 +27,7 @@ ON CONFLICT (tenant_id) DO NOTHING;
 
 
 -- ============================================================
--- 2. Insert marketing events (event_id auto-generated)
+-- 2. Insert marketing events (marketing_event_id auto-generated)
 -- ============================================================
 
 -- ---------- Tenant: Acme Retail ----------
@@ -205,6 +205,6 @@ VALUES
 -- SELECT status, COUNT(*) FROM embedding_job GROUP BY status;
 
 -- Preview embedding text
--- SELECT tenant_id, event_id, embedding_text FROM event_content_for_embedding LIMIT 5;
+-- SELECT tenant_id, marketing_event_id, embedding_text FROM event_content_for_embedding LIMIT 5;
 
 COMMIT;

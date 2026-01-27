@@ -26,7 +26,7 @@ class AgentTask(Base):
     task_goal: Mapped[str | None] = mapped_column(String)
 
     campaign_id: Mapped[str | None] = mapped_column(String)
-    event_id: Mapped[str | None] = mapped_column(String)
+    marketing_event_id: Mapped[str | None] = mapped_column(String)
     snapshot_id: Mapped[str | None] = mapped_column(String)
     
     related_news_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("news_feed.news_id"))
@@ -59,7 +59,7 @@ class DeliveryLog(Base):
     delivery_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     
     campaign_id: Mapped[str | None] = mapped_column(String)
-    event_id: Mapped[str] = mapped_column(String, nullable=False)
+    marketing_event_id: Mapped[str] = mapped_column(String, nullable=False)
     
     profile_id: Mapped[str] = mapped_column(String, nullable=False)
     
@@ -140,7 +140,7 @@ class EmbeddingJob(Base):
 
     job_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tenant_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
-    event_id: Mapped[str] = mapped_column(String, nullable=False)
+    marketing_event_id: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, server_default=text("'pending'"))
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

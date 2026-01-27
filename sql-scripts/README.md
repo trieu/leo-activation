@@ -108,7 +108,7 @@ Specific tactical actions within a campaign.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `event_id` | `TEXT` (PK) | Unique event identifier. |
+| `marketing_event_id` | `TEXT` (PK) | Unique marketing event identifier. |
 | `event_type` | `TEXT` | `BROADCAST`, `TRIGGER`, `API`. |
 | `event_channel` | `TEXT` | `EMAIL`, `SMS`, `PUSH`. |
 | `embedding` | `VECTOR(1536)` | **AI Context:** Semantic vector of the event description. |

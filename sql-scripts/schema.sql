@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS cdp_profiles (
     event_statistics JSONB NOT NULL DEFAULT '{}'::jsonb,
     -- Source: eventStatistics
     -- Example:
-    -- { "VIEW": 120, "CLICK": 34, "CONVERT": 2 }
+    -- { "id_default_journey-page-view": 120, "id_default_journey-ask-question": 34, "id_default_journey-purchase": 2 }
 
     top_engaged_touchpoints JSONB NOT NULL DEFAULT '[]'::jsonb,
     -- Source: topEngagedTouchpoints
@@ -291,6 +291,7 @@ CREATE TABLE IF NOT EXISTS cdp_profiles (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     ext_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status   TEXT NOT NULL DEFAULT 'active', -- active, suspended, archived
 
     -- =====================================================
     -- CONSTRAINTS
@@ -443,14 +444,14 @@ CREATE TABLE IF NOT EXISTS campaign (
 -- Partitioned by Tenant for scalability.
 CREATE TABLE IF NOT EXISTS marketing_event (
     tenant_id      UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
-    event_id       TEXT NOT NULL, -- Client-provided or generated ID
+    marketing_event_id       TEXT NOT NULL, -- Client-provided or generated ID
     campaign_id    TEXT, -- Reference to Parent Campaign
     
-    event_name     TEXT NOT NULL,
-    event_type     TEXT NOT NULL, -- 'BROADCAST', 'TRIGGER', 'API'
-    event_channel  TEXT NOT NULL, -- 'EMAIL', 'SMS', 'PUSH'
+    marketing_event_name     TEXT NOT NULL, -- e.g. "Email Blast June 2024"
+    marketing_event_type     TEXT NOT NULL, -- 'EMAIL', 'SMS', 'PUSH', 'IN_APP'
+    marketing_event_channel  TEXT NOT NULL, -- 'EVENT', 'PROMOTIONAL', 'TRANSACTIONAL'
     
-    start_at       TIMESTAMPTZ NOT NULL,
+    start_at       TIMESTAMPTZ NOT NULL, 
     end_at         TIMESTAMPTZ NOT NULL,
     status         TEXT NOT NULL DEFAULT 'planned',
     
@@ -461,7 +462,7 @@ CREATE TABLE IF NOT EXISTS marketing_event (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     
-    CONSTRAINT pk_marketing_event PRIMARY KEY (tenant_id, event_id),
+    CONSTRAINT pk_marketing_event PRIMARY KEY (tenant_id, marketing_event_id),
     CONSTRAINT fk_marketing_event_campaign FOREIGN KEY (tenant_id, campaign_id) 
         REFERENCES campaign (tenant_id, campaign_id) ON DELETE SET NULL
 ) PARTITION BY HASH (tenant_id);
@@ -670,7 +671,7 @@ CREATE TABLE IF NOT EXISTS agent_task (
 
     -- Linkage to other entities (All converted to TEXT)
     campaign_id  TEXT,
-    event_id     TEXT,
+    marketing_event_id     TEXT,
     snapshot_id  TEXT, 
     
     related_news_id BIGINT REFERENCES news_feed(news_id),
@@ -699,7 +700,7 @@ CREATE TABLE IF NOT EXISTS delivery_log (
     delivery_id   BIGSERIAL PRIMARY KEY,
     
     campaign_id   TEXT, -- FK to campaign
-    event_id      TEXT NOT NULL,
+    marketing_event_id      TEXT NOT NULL,
     
     profile_id    TEXT NOT NULL, -- FK to cdp_profiles (TEXT)
     
@@ -718,7 +719,7 @@ CREATE TABLE IF NOT EXISTS delivery_log (
 CREATE TABLE IF NOT EXISTS embedding_job (
     job_id      BIGSERIAL PRIMARY KEY,
     tenant_id   UUID NOT NULL,
-    event_id    TEXT NOT NULL,
+    marketing_event_id    TEXT NOT NULL,
     status      TEXT NOT NULL DEFAULT 'pending',
     attempts    INTEGER DEFAULT 0,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -732,11 +733,11 @@ CREATE TABLE IF NOT EXISTS embedding_job (
 -- Partitioned by time (Monthly) because this table grows huge.
 
 CREATE TABLE IF NOT EXISTS behavioral_events (
-    event_id        BIGSERIAL, -- High throughput, avoid UUID overhead here if possible, or use UUIDv7
+    event_id        TEXT NOT NULL, -- High throughput, avoid UUID overhead here if possible, or use UUIDv7
     tenant_id       UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
     profile_id      TEXT NOT NULL, -- No FK constraint for write speed? Or keep FK for integrity. Let's keep FK.
     
-    event_type      TEXT NOT NULL, -- 'VIEW', 'CLICK', 'DISMISS', 'SHARE', 'CONVERT'
+    event_metric_name      TEXT NOT NULL, -- 
     
     -- Context: What did they interact with?
     entity_type     TEXT, -- 'NEWS', 'ALERT', 'ASSET', 'CAMPAIGN'
@@ -992,7 +993,187 @@ CREATE INDEX IF NOT EXISTS idx_outcomes_profile_time
 
 
 -- ============================================================
--- 20. SYSTEM BOOTSTRAP: Safely bootstrap 'master' tenant
+-- 20. EVENT METRICS (EVENTS)
+-- ============================================================
+-- Defines event metric for events tracked via SDK / API.
+-- These event's metadata is used for scoring, segmentation, and triggering.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS event_metrics (
+    -- Tenant isolation
+    tenant_id             UUID NOT NULL
+        REFERENCES tenant(tenant_id) ON DELETE CASCADE,
+
+    -- Natural key (business-defined)
+    journey_map_id         TEXT NOT NULL,
+    event_name             TEXT NOT NULL,
+
+    -- Deterministic derived identifier
+    event_metric_id        TEXT GENERATED ALWAYS AS (
+        tenant_id || ':' || journey_map_id || ':' || event_name
+    ) STORED NOT NULL,
+
+    -- Event metadata
+    event_label            TEXT NOT NULL,
+
+    -- Funnel / journey
+    funnel_stage_id        TEXT NOT NULL,
+    flow_name              TEXT NOT NULL,
+    journey_stage          SMALLINT,
+
+    -- Scoring
+    score                  INTEGER NOT NULL DEFAULT 0,
+    cumulative_point       INTEGER NOT NULL DEFAULT 0,
+    score_model            SMALLINT,
+    data_type              SMALLINT,
+
+    -- Flags
+    show_in_observer_js    BOOLEAN NOT NULL DEFAULT FALSE,
+    system_metric          BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Timestamps
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Constraints
+    CONSTRAINT pk_event_metrics
+        PRIMARY KEY (tenant_id, journey_map_id, event_name)
+);
+
+-- Trigger
+CREATE TRIGGER trg_event_metrics_updated
+BEFORE UPDATE ON event_metrics
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+-- Indexes
+-- Fast event lookup (most common query)
+CREATE INDEX IF NOT EXISTS idx_bem_tenant_event
+    ON event_metrics (tenant_id, event_name);
+
+-- Flow-based analytics & routing
+CREATE INDEX IF NOT EXISTS idx_bem_tenant_flow
+    ON event_metrics (tenant_id, flow_name);
+
+-- Deterministic ID lookup (SDK / Kafka / API)
+CREATE INDEX IF NOT EXISTS idx_bem_event_metric_id
+    ON event_metrics (tenant_id, event_metric_id);
+
+-- Funnel analytics
+CREATE INDEX IF NOT EXISTS idx_bem_funnel_stage
+    ON event_metrics (tenant_id, funnel_stage_id);
+
+-- Journey map queries
+CREATE INDEX IF NOT EXISTS idx_bem_journey_map
+    ON event_metrics (tenant_id, journey_map_id);
+
+-- Time-based scans (dashboards, audits)
+CREATE INDEX IF NOT EXISTS idx_bem_created_at
+    ON event_metrics (tenant_id, created_at);
+
+-- System vs business metrics
+CREATE INDEX IF NOT EXISTS idx_bem_system_metric
+    ON event_metrics (tenant_id, system_metric);
+
+-- ============================================================
+-- 21. PRODUCT RECOMMENDATIONS (PERSONALIZATION)
+-- ============================================================
+-- Stores precomputed product recommendations per user profile.
+-- Supports journey-aware and context-aware recommendations.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS product_recommendations (
+    -- Tenant isolation
+    tenant_id              UUID NOT NULL
+        REFERENCES tenant(tenant_id) ON DELETE CASCADE,
+
+    -- Who
+    profile_id        TEXT NOT NULL
+        REFERENCES cdp_profiles(profile_id) ON DELETE CASCADE,
+
+    -- Context
+    journey_map_id          TEXT NOT NULL,
+    journey_stage_id        TEXT NOT NULL, -- e.g. "new-customer"
+    recommendation_context  TEXT,           -- homepage | email | in_app
+
+    -- What
+    product_id              TEXT NOT NULL,
+    product_type            TEXT NOT NULL, -- stock | fund | sku | course
+    product_url             TEXT DEFAULT NULL, -- the URL of product page
+
+    -- Scoring (deterministic)
+    raw_score               NUMERIC(10,4) NOT NULL DEFAULT 0,
+    interest_score          NUMERIC(5,4)  NOT NULL DEFAULT 0, -- 0.0000 → 1.0000
+    rank_position           INTEGER,
+
+    -- Model / logic
+    recommendation_model    TEXT NOT NULL, -- rule_v1 | ml_cf_v3
+    model_version           TEXT,
+    reason_codes            JSONB,          -- explainability
+
+    -- Freshness
+    last_interaction_at     TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Constraints
+    CONSTRAINT pk_product_recommendations
+        PRIMARY KEY (
+            tenant_id,
+            profile_id,
+            journey_map_id,
+            journey_stage_id,
+            product_id,
+            recommendation_model
+        ),
+
+    CONSTRAINT chk_interest_score_range
+        CHECK (interest_score >= 0 AND interest_score <= 1)
+);
+
+-- Primary read path: recommendations per profile
+CREATE INDEX IF NOT EXISTS idx_pr_profile
+    ON product_recommendations (tenant_id, profile_id);
+
+-- Journey-aware personalization
+CREATE INDEX IF NOT EXISTS idx_pr_journey_stage
+    ON product_recommendations (
+        tenant_id,
+        journey_map_id,
+        journey_stage_id
+    );
+
+-- Ranking & rendering (Top-N queries)
+CREATE INDEX IF NOT EXISTS idx_pr_profile_rank
+    ON product_recommendations (
+        tenant_id,
+        profile_id,
+        interest_score DESC,
+        rank_position
+    );
+
+-- Model comparison / experiments
+CREATE INDEX IF NOT EXISTS idx_pr_model
+    ON product_recommendations (
+        tenant_id,
+        recommendation_model
+    );
+
+-- Product analytics
+CREATE INDEX IF NOT EXISTS idx_pr_product
+    ON product_recommendations (
+        tenant_id,
+        product_id
+    );
+
+-- Freshness & cleanup
+CREATE INDEX IF NOT EXISTS idx_pr_updated_at
+    ON product_recommendations (
+        tenant_id,
+        updated_at
+    );
+
+
+
+-- ============================================================
+-- 22. SYSTEM BOOTSTRAP: Safely bootstrap 'master' tenant
 -- ============================================================
 
 -- RLS-safe: temporarily disable RLS for bootstrap

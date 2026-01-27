@@ -51,7 +51,7 @@ class MarketingEvent(Base, TimestampMixin):
         ForeignKey("tenant.tenant_id", ondelete="CASCADE"), 
         primary_key=True
     )
-    event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    marketing_event_id: Mapped[str] = mapped_column(String, primary_key=True)
     
     # We use a composite foreign key referencing campaign
     campaign_id: Mapped[str | None] = mapped_column(String)
