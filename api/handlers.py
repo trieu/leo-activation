@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Path
 from pydantic import BaseModel, Field
 
 # --- IMPORTS ---
@@ -42,7 +42,22 @@ except ImportError:
     def run_synch_profiles(segment_id: str):
         raise NotImplementedError("Worker module not found.")
 
+import psycopg
+from fastapi import Query, Depends
+from data_workers.cdp_db_utils import get_users_by_ticker_interest, get_ticker_scores_by_profile
+from data_utils.arango_client import get_arango_db
+from data_utils.settings import DatabaseSettings
+
 logger = logging.getLogger("LEO Activation API")
+
+# --- Database Dependency ---
+def get_db():
+    settings = DatabaseSettings()
+    conn = settings.get_pg_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 # ============================================================
@@ -102,6 +117,17 @@ class ZaloTestRequest(BaseModel):
     segment_name: str
     message: Optional[str] = None
     kwargs: Optional[Dict[str, Any]] = {}
+
+class InterestedUserResponse(BaseModel):
+    profile_id: str = Field(..., description="The Unique ID from CDP Profile")
+    score: float = Field(..., description="Normalized Interest Score (0.0 - 1.0)")
+    raw_points: float = Field(..., description="Actual accumulated raw points")
+
+class UserProfileInterestResponse(BaseModel):
+    profile_id: str
+    raw_scores: Dict[str, float] = Field(..., description="Map of Ticker -> Raw Accumulated Points")
+    interest_scores: Dict[str, float] = Field(..., description="Map of Ticker -> Normalized Score (0-1)")
+    segments: List[str] = Field(..., description="List of segment names the user belongs to")
 
 # Constants
 HELP_DOCUMENTATION_URL = '<a href="https://leocdp.com/documents" target="_blank" rel="noopener noreferrer"> https://leocdp.com/documents </a>'
@@ -310,5 +336,105 @@ def create_api_router(agent_router: AgentRouter) -> APIRouter:
         except Exception as e:
             logger.exception("Zalo direct test failed")
             raise HTTPException(status_code=500, detail=str(e))
+        
+    
+    # ========================================================
+    # 5. Audience Interest Endpoint
+    # ========================================================
+    # ### MODIFICATION: New dual score ###
+    
+    @router.get("/interested/{ticker}", response_model=List[InterestedUserResponse])
+    async def get_interested_users_api(
+        ticker: str,
+        min_score: float = Query(0.5, description="Minimum normalized interest score (0.0 - 1.0)"),
+        conn: psycopg.Connection = Depends(get_db)
+    ):
+        """
+        Get users interested in a stock based on the new asymptotic scoring logic.
+        
+        - **ticker**: Stock Symbol (e.g., AAPL)
+        - **min_score**: 0.0 to 1.0 (Default 0.5)
+        """
+        try:
+            # 1. Clean inputs
+            clean_ticker = ticker.upper().strip()
+            
+            # 2. Call repository
+            results = get_users_by_ticker_interest(conn, clean_ticker, min_score)
+            
+            # 3. Map DB results to Pydantic Model
+            response_data = []
+            for row in results:
+                response_data.append({
+                    # ### MODIFIED: Mapping new DB columns to JSON ###
+                    "profile_id": row['profile_id'],
+                    "score": row['interest_score'], 
+                    "raw_points": row['raw_score'],
+                    "last_interaction": str(row['last_interaction']) 
+                })
+                
+            return response_data
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        
+
+    @router.get("/profile_affinity/{profile_id}", response_model=UserProfileInterestResponse)
+    async def get_user_profile_data(
+        profile_id: str = Path(..., description="The Unique ArangoDB _key for the profile"),
+        conn: psycopg.Connection = Depends(get_db)
+    ):
+        """
+        Fetches a 360-view of the user's stock interests and segment membership.
+        """
+        settings = DatabaseSettings()
+        
+        # A. Fetch Scores from Postgres
+        # ----------------------------------------
+        repo_results = get_ticker_scores_by_profile(conn, profile_id)
+        
+        raw_map = {}
+        interest_map = {}
+        
+        for row in repo_results:
+            ticker = row['ticker']
+            raw_map[ticker] = row['raw_score']
+            interest_map[ticker] = row['interest_score']
+
+        # B. Fetch Segments from ArangoDB (FIXED)
+        # ----------------------------------------
+        segments_list = []
+        arango_db = get_arango_db(settings)
+        
+        if arango_db:
+            try:
+                # ### CHANGED: Extract 'name' from the 'inSegments' object array ###
+                # Syntax [*].name creates a new array containing only the names
+                aql = """
+                    FOR p IN cdp_profile
+                        FILTER p._key == @profile_id
+                        RETURN p.inSegments[*].name
+                """
+                
+                cursor = arango_db.aql.execute(aql, bind_vars={'profile_id': profile_id})
+                
+                # The query returns a list containing one list: [ ["Segment A", "Segment B"] ]
+                result = [doc for doc in cursor]
+                
+                if result and result[0]:
+                    segments_list = result[0]
+                    
+            except Exception as e:
+                print(f"⚠️ Failed to fetch segments from Arango: {e}")
+                # Non-blocking error: return empty list if Arango fails
+
+        # C. Return Combined Response
+        # ----------------------------------------
+        return UserProfileInterestResponse(
+            profile_id=profile_id,
+            raw_scores=raw_map,
+            interest_scores=interest_map,
+            segments=segments_list
+        )
 
     return router

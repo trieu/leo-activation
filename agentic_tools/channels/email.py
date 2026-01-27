@@ -9,6 +9,9 @@ from email.utils import formataddr
 from agentic_tools.channels.activation import NotificationChannel
 from main_configs import MarketingConfigs
 
+from data_utils.settings import DatabaseSettings
+from data_utils.arango_client import get_arango_db
+
 from agentic_tools.channels.helpers import (
     MessageRenderer,
     PRODUCT_RECOMMENDATION_TEMPLATE
@@ -26,7 +29,11 @@ class SegmentProfileLoader:
     profile data for a specific segment.
     """
     def __init__(self):
-        pass
+        self.db = None
+        try:
+            self.db = get_arango_db(DatabaseSettings())
+        except Exception as e:
+            logger.error(f"[ProfileLoader] Failed to connect to ArangoDB: {e}")
 
     def fetch_recipients(self, segment_identifier: str) -> List[Dict[str, Any]]:
         """

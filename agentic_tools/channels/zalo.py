@@ -7,10 +7,11 @@ import random
 from typing import Dict, Any, Optional, Tuple
 
 from agentic_tools.channels.activation import NotificationChannel
-
-
 from main_configs import MarketingConfigs
+from data_workers.cdp_db_utils import get_user_contact_from_cdp
 
+from data_utils.settings import DatabaseSettings
+from data_utils.arango_client import get_arango_db
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,12 @@ class ZaloOAChannel(NotificationChannel):
         # -------- Database Connection --------
         # FIXME profile must load from PGSQL later
         
+        try:
+            self.db = get_arango_db(DatabaseSettings())
+        except Exception as e:
+            logger.error(f"[EmailChannel] Failed to connect to ArangoDB on init: {e}")
+            self.db = None
+
         self.zns_url = "https://business.openapi.zalo.me/message/template"
         self.oauth_url = "https://oauth.zaloapp.com/v4/oa/access_token"
         

@@ -1,7 +1,10 @@
 import logging
-from typing import Dict
+from typing import Dict, Any, List
+
+from psycopg.rows import dict_row
 
 logger = logging.getLogger("agentic_tools.data_enrichment")
+
 
 def analyze_segment(segment_identifier: str) -> Dict[str, str]:
     """
