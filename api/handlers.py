@@ -1,18 +1,12 @@
 """
 API Route Handlers for LEO Activation Agent.
-
-This module defines the FastAPI router that exposes:
-1. /chat: Natural language interface (User -> Router -> Tools -> User).
-2. /tool_calling: Direct programmatic execution of tools (App -> Tool -> Result).
-3. /data/sync-segment: Direct endpoint to trigger profile synchronization (ArangoDB -> PGSQL).
-4. /test/zalo-direct: Direct integration testing for Zalo.
 """
 
-import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
-from fastapi import APIRouter, HTTPException, Body
+import psycopg
+from fastapi import APIRouter, HTTPException, Body, Path, Query, Depends
 from pydantic import BaseModel, Field
 
 # --- IMPORTS ---
@@ -32,17 +26,29 @@ from agentic_tools.channels.zalo import ZaloOAChannel
 from data_workers.sync_segment_profiles import run_synch_profiles_async
 from main_configs import DATA_SYNC_API_KEY
 
-# Import the worker function from the original script
-# Ensure your project structure allows this import
+# --- DB UTILS ---
+# We need these for the /interested endpoint
+# from data_workers.pg_profile_repository import get_users_by_ticker_interest
+from data_utils.settings import DatabaseSettings
+
+# Import the worker function for sync
 try:
     from data_workers.sync_segment_profiles import run_synch_profiles
 except ImportError:
-    # Fallback/Mock for development if the worker module isn't in pythonpath
     logging.warning("Could not import 'run_synch_profiles'. Sync features will fail if called.")
     def run_synch_profiles(segment_id: str):
         raise NotImplementedError("Worker module not found.")
 
 logger = logging.getLogger("LEO Activation API")
+
+# --- Database Dependency ---
+def get_db():
+    settings = DatabaseSettings()
+    conn = settings.get_pg_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 # ============================================================
@@ -50,84 +56,54 @@ logger = logging.getLogger("LEO Activation API")
 # ============================================================
 
 class ChatRequest(BaseModel):
-    """Schema for natural language chat requests."""
-    prompt: Union[str, List[Dict[str, Any]]] = Field(
-        ...,
-        description="User query string OR a list of message history objects.",
-        json_schema_extra={
-            "example": "Sync profiles for the 'VIP Users' segment and send them a Zalo message."
-        },
-    )
+    prompt: Union[str, List[Dict[str, Any]]] = Field(..., description="User query or history")
 
 class ToolCallingRequest(BaseModel):
-    """Schema for direct tool execution requests."""
-    tool_name: str = Field(..., description="The exact function name of the tool to execute.")
-    tool_args: Dict[str, Any] = Field(default_factory=dict, description="Dictionary of arguments to pass to the tool.")
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "tool_name": "sync_segment_to_db",
-                "tool_args": {"segment_id": "seg_vip_users_01"}
-            }
-        }
-    }
+    tool_name: str
+    tool_args: Dict[str, Any] = {}
 
 class SyncRequest(BaseModel):
-    """Schema for direct data synchronization requests."""
-    segment_id: str = Field(..., description="The ID of the segment to synchronize from ArangoDB to Postgres.")
-    data_sync_api_key: Optional[str] = Field(
-        None,
-        description="API key for authenticating the sync request."
-    )
-
-class ToolCallDebug(BaseModel):
-    name: str
-    arguments: Dict[str, Any]
-
-class ToolResultDebug(BaseModel):
-    name: str
-    response: Any
-
-class DebugInfo(BaseModel):
-    calls: List[ToolCallDebug]
-    data: List[ToolResultDebug]
+    segment_id: str
+    data_sync_api_key: Optional[str] = None
 
 class ChatResponse(BaseModel):
-    """Standard response format for Chat and Tool Calling endpoints."""
-    answer: str = Field(..., description="The natural language synthesis or direct result.")
-    debug: DebugInfo = Field(..., description="Technical details of tool execution.")
+    answer: str
+    debug: Any
 
 class ZaloTestRequest(BaseModel):
     segment_name: str
     message: Optional[str] = None
     kwargs: Optional[Dict[str, Any]] = {}
 
+class InterestedUserResponse(BaseModel):
+    profile_id: str
+    score: float
+    raw_points: float
+    last_interaction: Optional[str] = None
+
+class UserProfileInterestResponse(BaseModel):
+    """Schema for the 360-view profile endpoint"""
+    profile_id: Optional[str] = None
+    identities: List[str] = Field(default_factory=list)
+    primary_email: Optional[str] = None
+    raw_scores: Dict[str, float]
+    interest_scores: Dict[str, float]
+    segments: List[str]
+
 # Constants
-HELP_DOCUMENTATION_URL = '<a href="https://leocdp.com/documents" target="_blank" rel="noopener noreferrer"> https://leocdp.com/documents </a>'
-HELP_MESSAGE = f"Please refer to the documentation at {HELP_DOCUMENTATION_URL} for assistance."
+HELP_DOCUMENTATION_URL = '<a href="https://leocdp.com/documents" target="_blank"> https://leocdp.com/documents </a>'
+HELP_MESSAGE = f"Please refer to the documentation at {HELP_DOCUMENTATION_URL}"
 
 
 # ============================================================
-# New Tool Definition (Wrapper)
+# New Tool Definition
 # ============================================================
 
 def sync_segment_to_db(segment_id: str) -> str:
-    """
-    Synchronizes customer profiles from LEO CDP (ArangoDB) to the Activation Database (PostgreSQL).
-    
-    Use this tool when the user asks to "sync", "update", "refresh", or "import" data for a specific segment.
-    
-    Args:
-        segment_id (str): The unique identifier of the segment to sync.
-        
-    Returns:
-        str: A status message indicating success or failure.
-    """
     try:
         logger.info(f"Agent triggering sync for segment: {segment_id}")
         run_synch_profiles(segment_id=segment_id)
-        return f"Successfully synchronized profiles for segment '{segment_id}' from LEO CDP to PostgreSQL."
+        return f"Successfully synchronized profiles for segment '{segment_id}'."
     except Exception as e:
         logger.exception(f"Sync failed for segment {segment_id}")
         return f"Failed to synchronize segment '{segment_id}'. Error: {str(e)}"
@@ -138,177 +114,254 @@ def sync_segment_to_db(segment_id: str) -> str:
 # ============================================================
 
 def create_api_router(agent_router: AgentRouter) -> APIRouter:
-    """
-    Create and configure the FastAPI router.
-
-    Args:
-        agent_router: An initialized instance of AgentRouter.
-
-    Returns:
-        APIRouter: Configured router with chat, tool, and test endpoints.
-    """
     router = APIRouter()
 
-    # 1. Define the List of Tools available to the Agent
-    # Added 'sync_segment_to_db' to the list so the AI knows about it.
+    # 1. Tools Setup
     tools = [
-        get_date,
-        get_current_weather,
-        get_marketing_events,
-        get_alert_types,
-        manage_cdp_segment,
-        activate_channel,
-        analyze_segment,
-        show_all_segments,
-        sync_segment_to_db  # <--- NEW TOOL REGISTERED HERE
+        get_date, get_current_weather, get_marketing_events, get_alert_types,
+        manage_cdp_segment, activate_channel, analyze_segment, show_all_segments,
+        sync_segment_to_db
     ]
     
-    # 2. Map Tool Names to Actual Functions
     tools_map = AVAILABLE_TOOLS.copy()
-    
-    # Ensure local tools are in the map
     local_tools = {
         "show_all_segments": show_all_segments,
         "analyze_segment": analyze_segment,
-        "sync_segment_to_db": sync_segment_to_db,  # <--- NEW TOOL MAPPED HERE
+        "sync_segment_to_db": sync_segment_to_db,
     }
-    
     for name, func in local_tools.items():
         if name not in tools_map:
             tools_map[name] = func
 
-    # ========================================================
-    # 1. Direct Tool Calling Endpoint
-    # ========================================================
-    @router.post("/tool_calling", response_model=ChatResponse, summary="Execute a specific tool directly")
+    # --------------------------------------------------------
+    # 1. Tool Calling
+    # --------------------------------------------------------
+    @router.post("/tool_calling", response_model=ChatResponse)
     async def tool_calling_endpoint(payload: ToolCallingRequest):
         try:
-            logger.info("🔧 Direct Tool Call: %s | Args: %s", payload.tool_name, payload.tool_args)
-
             if payload.tool_name not in tools_map:
                 raise HTTPException(status_code=400, detail=f"Tool '{payload.tool_name}' not found.")
-
+            
             response = agent_router.handle_tool_calling(
-                tool_calling_json={
-                    "tool_name": payload.tool_name,
-                    "args": payload.tool_args
-                },
-                tools=tools,
-                tools_map=tools_map,
+                tool_calling_json={"tool_name": payload.tool_name, "args": payload.tool_args},
+                tools=tools, tools_map=tools_map
             )
-
-            return ChatResponse(
-                answer=response["answer"],
-                debug=DebugInfo(
-                    calls=[ToolCallDebug(**c) for c in response["debug"]["calls"]],
-                    data=[ToolResultDebug(**d) for d in response["debug"]["data"]],
-                ),
-            )
-        except HTTPException:
-            raise
+            return ChatResponse(answer=response["answer"], debug=response["debug"])
         except Exception as e:
-            logger.exception("Tool calling endpoint failed unexpectedly")
+            logger.exception("Tool calling failed")
             raise HTTPException(status_code=500, detail=str(e))
 
-    # ========================================================
-    # 2. Chat Endpoint (Agentic)
-    # ========================================================
-    @router.post("/chat", response_model=ChatResponse, summary="Natural Language Agent Interface")
+    # --------------------------------------------------------
+    # 2. Chat
+    # --------------------------------------------------------
+    @router.post("/chat", response_model=ChatResponse)
     async def chat_endpoint(payload: ChatRequest):
         try:
             input_content = payload.prompt
-            
-            # --- HELP COMMAND SHORTCUT ---
             if isinstance(input_content, str):
-                cleaned_prompt = input_content.strip()
-                logger.info("Incoming chat prompt: %s", cleaned_prompt)
-                
-                if cleaned_prompt.lower() == "help":
-                    return ChatResponse(
-                        answer=HELP_MESSAGE,
-                        debug=DebugInfo(calls=[], data=[]),
-                    )
-                messages = [{"role": "user", "content": cleaned_prompt}]
-            
-            elif isinstance(input_content, list):
-                logger.info("Incoming chat history with %d messages", len(input_content))
-                messages = input_content
+                if input_content.strip().lower() == "help":
+                    return ChatResponse(answer=HELP_MESSAGE, debug={})
+                messages = [{"role": "user", "content": input_content.strip()}]
             else:
-                raise HTTPException(status_code=400, detail="Invalid prompt format.")
+                messages = input_content
 
-            # --- AGENT EXECUTION ---
-            response = agent_router.handle_message(
-                messages,
-                tools=tools,
-                tools_map=tools_map,
-            )
-
-            return ChatResponse(
-                answer=response["answer"],
-                debug=DebugInfo(
-                    calls=[ToolCallDebug(**c) for c in response["debug"]["calls"]],
-                    data=[ToolResultDebug(**d) for d in response["debug"]["data"]],
-                ),
-            )
-
+            response = agent_router.handle_message(messages, tools=tools, tools_map=tools_map)
+            return ChatResponse(answer=response["answer"], debug=response["debug"])
         except Exception as e:
-            logger.exception("Chat endpoint execution failed")
+            logger.exception("Chat failed")
             raise HTTPException(status_code=500, detail=str(e))
 
-    # ========================================================
-    # 3. Data Synchronization Endpoint (Direct)
-    # ========================================================
-    @router.post("/data/sync-segment", summary="Trigger Profile Sync (Arango -> PGSQL)")
+    # --------------------------------------------------------
+    # 3. Sync
+    # --------------------------------------------------------
+    @router.post("/data/sync-segment")
     async def sync_segment_endpoint(request: SyncRequest):
-        """
-        Direct endpoint to run the synchronization logic without Agent reasoning.
-        Args:
-            request (SyncRequest): Request body containing segment_id.
-        Returns:
-            dict: Status message with number of synced profiles.
-        """
-        
-        """ e.g: Send HTTP POST to URL: http://0.0.0.0:8000/data/sync-segment 
-            with body {"segment_id": "seg_vip_users_01","data_sync_api_key":"your_leocdp_api_key_here"} """
-        
-        try:
-            if request.data_sync_api_key != DATA_SYNC_API_KEY:
-                logger.warning("Unauthorized sync attempt with invalid API key.")
-                raise HTTPException(status_code=401, detail="Invalid API key for data synchronization.")
-            
-            logger.info("🔄 Manual Sync triggered for segment: %s", request.segment_id)
-            
-            # Execute the worker function directly
-            count = await run_synch_profiles_async(segment_id=request.segment_id)
-            return {"status": "success", "synced": count}
-            
-        except Exception as e:
-            logger.exception("Sync endpoint failed")
-            raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+        if request.data_sync_api_key != DATA_SYNC_API_KEY:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        count = await run_synch_profiles_async(segment_id=request.segment_id)
+        return {"status": "success", "synced": count}
 
-    # ========================================================
-    # 4. Zalo Direct Test Endpoint
-    # ========================================================
-    @router.post("/test/zalo-direct", summary="Test Zalo Integration")
+    # --------------------------------------------------------
+    # 4. Zalo Test
+    # --------------------------------------------------------
+    @router.post("/test/zalo-direct")
     async def test_zalo_direct(request: ZaloTestRequest):
-        try:
-            logger.info("Testing Zalo Direct for segment: %s", request.segment_name)
-            zalo_channel = ZaloOAChannel()
-            
-            result = zalo_channel.send(
-                recipient_segment=request.segment_name,
-                message=request.message,
-                **request.kwargs,
-            )
+        zalo = ZaloOAChannel()
+        res = zalo.send(request.segment_name, request.message, **request.kwargs)
+        return {"status": "completed", "channel_response": res}
 
-            return {
-                "status": "completed",
-                "mode": "direct_test",
-                "channel_response": result,
-            }
+    # --------------------------------------------------------
+    # 5. Interested Users (By Ticker)
+    # --------------------------------------------------------
+    @router.get("/interested/{ticker}", response_model=List[InterestedUserResponse])
+    async def get_interested_users_api(
+        ticker: str,
+        min_score: float = Query(0.5, description="Minimum score 0.0-1.0"),
+        conn: psycopg.Connection = Depends(get_db)
+    ):
+        """
+        Finds users interested in a specific ticker (e.g., 'AAPL') with explicit SQL 
+        for debugging and robustness.
+        """
+        # 1. Sanitize Input
+        clean_ticker = ticker.upper().strip()
+        response_list = []
+
+        # 2. SQL Query (Joins Scores with Profile Data)
+        # We assume 'product_id' stores the ticker symbol
+        sql = """
+            SELECT 
+                profile_id,
+                interest_score,
+                raw_score
+            FROM product_recommendations
+            WHERE product_id = %s 
+              AND interest_score >= %s
+            ORDER BY interest_score DESC
+            LIMIT 50
+        """
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (clean_ticker, min_score))
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                # 3. Robust Data Parsing (Handles Dict or Tuple rows)
+                if isinstance(row, (tuple, list)):
+                    # Tuple Order: 0=id, 1=interest, 2=raw, 3=last_interaction
+                    p_id = row[0]
+                    i_score = row[1]
+                    r_score = row[2]
+                else:
+                    # Dictionary Access
+                    p_id = row['profile_id']
+                    i_score = row['interest_score']
+                    r_score = row['raw_score']
+
+                # 4. Map to Pydantic Model
+                response_list.append({
+                    "profile_id": p_id,
+                    "score": float(i_score) if i_score is not None else 0.0,
+                    "raw_points": float(r_score) if r_score is not None else 0.0,
+                })
+            
+            cursor.close()
+            return response_list
 
         except Exception as e:
-            logger.exception("Zalo direct test failed")
-            raise HTTPException(status_code=500, detail=str(e))
+            # 5. Explicit Error Logging
+            logger.error(f"❌ [SQL Error] Failed to fetch interested users for '{clean_ticker}': {e}")
+            raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
 
+    # --------------------------------------------------------
+    # 6. Profile Affinity (Direct SQL Implementation)
+    # --------------------------------------------------------
+    @router.get("/profile_affinity/{lookup_key}", response_model=UserProfileInterestResponse)
+    async def get_user_profile_data(
+        lookup_key: str = Path(..., description="Profile ID, Email, or Identity"),
+        conn: psycopg.Connection = Depends(get_db)
+    ):
+        clean_key = lookup_key.strip()
+        
+        # Containers
+        profile_id = None
+        primary_email = None
+        final_identities: List[str] = []
+        final_segments: List[str] = []
+        raw_map: Dict[str, float] = {}
+        interest_map: Dict[str, float] = {}
+
+        try:
+            # A. FIND PROFILE
+            profile_sql = """
+                SELECT profile_id, primary_email, identities, segments
+                FROM cdp_profiles
+                WHERE profile_id = %s OR primary_email = %s OR identities::jsonb ? %s
+                LIMIT 1
+            """
+            cursor = conn.cursor()
+            cursor.execute(profile_sql, (clean_key, clean_key, clean_key))
+            row = cursor.fetchone()
+            
+            if row:
+                # ----------------------------------------------------------
+                # ✅ FIX: Use string keys (Dict access) instead of indexes
+                # ----------------------------------------------------------
+                # Handle cases where row might be a Tuple OR a Dict (Safety check)
+                if isinstance(row, (tuple, list)):
+                    # Fallback for tuple cursor
+                    profile_id = row[0]
+                    primary_email = row[1]
+                    raw_ids = row[2]
+                    raw_segs = row[3]
+                else:
+                    # Standard Dict cursor access (Likely your case)
+                    profile_id = row['profile_id']
+                    primary_email = row['primary_email']
+                    raw_ids = row['identities']
+                    raw_segs = row['segments']
+                
+                # Parse Identities
+                if isinstance(raw_ids, list):
+                    final_identities = [
+                        i for i in raw_ids 
+                        if isinstance(i, str) and (i.startswith("email:") or i.startswith("phone:"))
+                    ]
+                
+                # Parse Segments
+                if isinstance(raw_segs, list):
+                    final_segments = [
+                        s.get("name") for s in raw_segs 
+                        if isinstance(s, dict) and s.get("name")
+                    ]
+                cursor.close()
+            else:
+                cursor.close()
+                logger.warning(f"Profile not found: {clean_key}")
+                return UserProfileInterestResponse(
+                    profile_id=None, identities=[], raw_scores={}, interest_scores={}, segments=[]
+                )
+
+            # B. FETCH SCORES
+            if profile_id:
+                score_sql = """
+                    SELECT product_id, raw_score, interest_score 
+                    FROM product_recommendations WHERE profile_id = %s
+                """
+                cursor = conn.cursor()
+                cursor.execute(score_sql, (profile_id,))
+                rows = cursor.fetchall()
+                
+                for r in rows:
+                    # ✅ FIX: Handle Dict/Tuple for scores too
+                    if isinstance(r, (tuple, list)):
+                        p_id, raw, interest = r[0], r[1], r[2]
+                    else:
+                        p_id = r['product_id']
+                        raw = r['raw_score']
+                        interest = r['interest_score']
+
+                    if p_id:
+                        raw_map[p_id] = float(raw or 0.0)
+                        interest_map[p_id] = float(interest or 0.0)
+                cursor.close()
+
+        except Exception as e:
+            # Enhanced logging to see the type if it fails again
+            logger.error(f"SQL Error for {clean_key} | Type: {type(e)} | Msg: {e}")
+            raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
+
+        return UserProfileInterestResponse(
+            profile_id=profile_id,
+            identities=final_identities,
+            primary_email=primary_email,
+            raw_scores=raw_map,
+            interest_scores=interest_map,
+            segments=final_segments
+        )
+
+    # ========================================================
+    # ⚠️ THIS WAS MISSING: RETURN THE ROUTER OBJECT
+    # ========================================================
     return router
