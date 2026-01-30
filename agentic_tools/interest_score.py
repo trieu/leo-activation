@@ -186,10 +186,10 @@ def run_batch_scoring_job(settings: DatabaseSettings, start_time: str, end_time:
                 
                 if record:
                     if isinstance(record, dict):
-                        current_raw = record['raw_score'] or 0.0
+                        current_raw = float(record['raw_score'] or 0.0) 
                         prev_interaction = record['last_interaction_at']
                     else:
-                        current_raw = record[0] or 0.0
+                        current_raw = float(record[0] or 0.0)
                         prev_interaction = record[1]
 
                     if prev_interaction and prev_interaction.tzinfo is None:
@@ -276,7 +276,7 @@ if __name__ == "__main__":
     # 2. Calculate Window
     now = datetime.datetime.now(datetime.timezone.utc)
     window_end = now.replace(minute=0, second=0, microsecond=0)
-    window_start = window_end - datetime.timedelta(hours=150)
+    window_start = window_end - datetime.timedelta(hours=1)
     
     start_str = window_start.isoformat()
     end_str = window_end.isoformat()

@@ -285,9 +285,6 @@ def create_api_router(agent_router: AgentRouter) -> APIRouter:
             row = cursor.fetchone()
             
             if row:
-                # ----------------------------------------------------------
-                # ✅ FIX: Use string keys (Dict access) instead of indexes
-                # ----------------------------------------------------------
                 # Handle cases where row might be a Tuple OR a Dict (Safety check)
                 if isinstance(row, (tuple, list)):
                     # Fallback for tuple cursor
@@ -334,7 +331,7 @@ def create_api_router(agent_router: AgentRouter) -> APIRouter:
                 rows = cursor.fetchall()
                 
                 for r in rows:
-                    # ✅ FIX: Handle Dict/Tuple for scores too
+                    # Handle Dict/Tuple for scores too
                     if isinstance(r, (tuple, list)):
                         p_id, raw, interest = r[0], r[1], r[2]
                     else:
