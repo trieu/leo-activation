@@ -266,6 +266,133 @@ def run_garbage_collection(settings: DatabaseSettings):
     finally:
         conn.close()
 
+# ============================================================
+# READ FUNCTIONS (Repository Layer for API)
+# ============================================================
+
+def get_interested_users(conn, tenant_uuid: str, ticker: str, min_score: float) -> List[Dict[str, Any]]:
+    """
+    Fetches users interested in a specific ticker for a specific tenant.
+    """
+    clean_ticker = ticker.upper().strip()
+    results = []
+    
+    query = """
+        SELECT 
+            profile_id,
+            interest_score,
+            raw_score
+        FROM product_recommendations
+        WHERE tenant_id = %s
+          AND product_id = %s 
+          AND interest_score >= %s
+        ORDER BY interest_score DESC
+        LIMIT 50
+    """
+    
+    with conn.cursor() as cur:
+        cur.execute(query, (tenant_uuid, clean_ticker, min_score))
+        rows = cur.fetchall()
+        
+        for row in rows:
+            # Handle tuple vs dict based on row_factory
+            if isinstance(row, dict):
+                results.append({
+                    "profile_id": row['profile_id'],
+                    "score": float(row['interest_score'] or 0.0),
+                    "raw_points": float(row['raw_score'] or 0.0)
+                })
+            else:
+                results.append({
+                    "profile_id": row[0],
+                    "score": float(row[1] or 0.0),
+                    "raw_points": float(row[2] or 0.0)
+                })
+                
+    return results
+
+def get_profile_affinity(conn, tenant_uuid: str, lookup_key: str) -> Dict[str, Any]:
+    """
+    Fetches a 360-view of a user's profile and their interest scores.
+    """
+    clean_key = lookup_key.strip()
+    
+    # 1. Fetch Profile Identity
+    # We strictly filter by tenant_id to prevent data leaks across tenants
+    profile_sql = """
+        SELECT profile_id, primary_email, identities, segments
+        FROM cdp_profiles
+        WHERE tenant_id = %s 
+          AND (profile_id = %s OR primary_email = %s OR identities::jsonb ? %s)
+        LIMIT 1
+    """
+    
+    with conn.cursor() as cur:
+        cur.execute(profile_sql, (tenant_uuid, clean_key, clean_key, clean_key))
+        row = cur.fetchone()
+        
+        if not row:
+            return None # Not found
+            
+        if isinstance(row, dict):
+            profile_data = row
+        else:
+            profile_data = {
+                'profile_id': row[0],
+                'primary_email': row[1],
+                'identities': row[2],
+                'segments': row[3]
+            }
+
+    # 2. Fetch Scores for this Profile
+    # Using the resolved profile_id from step 1
+    score_sql = """
+        SELECT product_id, raw_score, interest_score 
+        FROM product_recommendations 
+        WHERE tenant_id = %s AND profile_id = %s
+    """
+    
+    raw_map = {}
+    interest_map = {}
+    
+    with conn.cursor() as cur:
+        cur.execute(score_sql, (tenant_uuid, profile_data['profile_id']))
+        rows = cur.fetchall()
+        
+        for r in rows:
+            if isinstance(r, dict):
+                pid, raw, interest = r['product_id'], r['raw_score'], r['interest_score']
+            else:
+                pid, raw, interest = r[0], r[1], r[2]
+                
+            if pid:
+                raw_map[pid] = float(raw or 0.0)
+                interest_map[pid] = float(interest or 0.0)
+
+    # 3. Format Output
+    # Parse Identities
+    raw_ids = profile_data.get('identities', [])
+    final_identities = [
+        i for i in (raw_ids if isinstance(raw_ids, list) else [])
+        if isinstance(i, str) and (i.startswith("email:") or i.startswith("phone:"))
+    ]
+
+    # Parse Segments
+    raw_segs = profile_data.get('segments', [])
+    final_segments = [
+        s.get("name") for s in (raw_segs if isinstance(raw_segs, list) else [])
+        if isinstance(s, dict) and s.get("name")
+    ]
+
+    return {
+        "profile_id": profile_data['profile_id'],
+        "identities": final_identities,
+        "primary_email": profile_data.get('primary_email'),
+        "raw_scores": raw_map,
+        "interest_scores": interest_map,
+        "segments": final_segments
+    }
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     settings = DatabaseSettings()

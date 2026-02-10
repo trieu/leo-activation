@@ -26,6 +26,8 @@ from agentic_tools.channels.zalo import ZaloOAChannel
 from data_workers.sync_segment_profiles import run_synch_profiles_async
 from main_configs import DATA_SYNC_API_KEY
 
+from api.recommendation_system import router as rec_router
+
 # --- DB UTILS ---
 # We need these for the /interested endpoint
 # from data_workers.pg_profile_repository import get_users_by_ticker_interest
@@ -132,6 +134,8 @@ def create_api_router(agent_router: AgentRouter) -> APIRouter:
     for name, func in local_tools.items():
         if name not in tools_map:
             tools_map[name] = func
+    
+    router.include_router(rec_router)
 
     # --------------------------------------------------------
     # 1. Tool Calling
@@ -189,176 +193,5 @@ def create_api_router(agent_router: AgentRouter) -> APIRouter:
         zalo = ZaloOAChannel()
         res = zalo.send(request.segment_name, request.message, **request.kwargs)
         return {"status": "completed", "channel_response": res}
-
-    # --------------------------------------------------------
-    # 5. Interested Users (By Ticker)
-    # --------------------------------------------------------
-    @router.get("/interested/{ticker}", response_model=List[InterestedUserResponse])
-    async def get_interested_users_api(
-        ticker: str,
-        min_score: float = Query(0.5, description="Minimum score 0.0-1.0"),
-        conn: psycopg.Connection = Depends(get_db)
-    ):
-        """
-        Finds users interested in a specific ticker (e.g., 'AAPL') with explicit SQL 
-        for debugging and robustness.
-        """
-        # 1. Sanitize Input
-        clean_ticker = ticker.upper().strip()
-        response_list = []
-
-        # 2. SQL Query (Joins Scores with Profile Data)
-        # We assume 'product_id' stores the ticker symbol
-        sql = """
-            SELECT 
-                profile_id,
-                interest_score,
-                raw_score
-            FROM product_recommendations
-            WHERE product_id = %s 
-              AND interest_score >= %s
-            ORDER BY interest_score DESC
-            LIMIT 50
-        """
-
-        try:
-            cursor = conn.cursor()
-            cursor.execute(sql, (clean_ticker, min_score))
-            rows = cursor.fetchall()
-            
-            for row in rows:
-                # 3. Robust Data Parsing (Handles Dict or Tuple rows)
-                if isinstance(row, (tuple, list)):
-                    # Tuple Order: 0=id, 1=interest, 2=raw, 3=last_interaction
-                    p_id = row[0]
-                    i_score = row[1]
-                    r_score = row[2]
-                else:
-                    # Dictionary Access
-                    p_id = row['profile_id']
-                    i_score = row['interest_score']
-                    r_score = row['raw_score']
-
-                # 4. Map to Pydantic Model
-                response_list.append({
-                    "profile_id": p_id,
-                    "score": float(i_score) if i_score is not None else 0.0,
-                    "raw_points": float(r_score) if r_score is not None else 0.0,
-                })
-            
-            cursor.close()
-            return response_list
-
-        except Exception as e:
-            # 5. Explicit Error Logging
-            logger.error(f"❌ [SQL Error] Failed to fetch interested users for '{clean_ticker}': {e}")
-            raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
-
-    # --------------------------------------------------------
-    # 6. Profile Affinity (Direct SQL Implementation)
-    # --------------------------------------------------------
-    @router.get("/profile_affinity/{lookup_key}", response_model=UserProfileInterestResponse)
-    async def get_user_profile_data(
-        lookup_key: str = Path(..., description="Profile ID, Email, or Identity"),
-        conn: psycopg.Connection = Depends(get_db)
-    ):
-        clean_key = lookup_key.strip()
         
-        # Containers
-        profile_id = None
-        primary_email = None
-        final_identities: List[str] = []
-        final_segments: List[str] = []
-        raw_map: Dict[str, float] = {}
-        interest_map: Dict[str, float] = {}
-
-        try:
-            # A. FIND PROFILE
-            profile_sql = """
-                SELECT profile_id, primary_email, identities, segments
-                FROM cdp_profiles
-                WHERE profile_id = %s OR primary_email = %s OR identities::jsonb ? %s
-                LIMIT 1
-            """
-            cursor = conn.cursor()
-            cursor.execute(profile_sql, (clean_key, clean_key, clean_key))
-            row = cursor.fetchone()
-            
-            if row:
-                # Handle cases where row might be a Tuple OR a Dict (Safety check)
-                if isinstance(row, (tuple, list)):
-                    # Fallback for tuple cursor
-                    profile_id = row[0]
-                    primary_email = row[1]
-                    raw_ids = row[2]
-                    raw_segs = row[3]
-                else:
-                    # Standard Dict cursor access (Likely your case)
-                    profile_id = row['profile_id']
-                    primary_email = row['primary_email']
-                    raw_ids = row['identities']
-                    raw_segs = row['segments']
-                
-                # Parse Identities
-                if isinstance(raw_ids, list):
-                    final_identities = [
-                        i for i in raw_ids 
-                        if isinstance(i, str) and (i.startswith("email:") or i.startswith("phone:"))
-                    ]
-                
-                # Parse Segments
-                if isinstance(raw_segs, list):
-                    final_segments = [
-                        s.get("name") for s in raw_segs 
-                        if isinstance(s, dict) and s.get("name")
-                    ]
-                cursor.close()
-            else:
-                cursor.close()
-                logger.warning(f"Profile not found: {clean_key}")
-                return UserProfileInterestResponse(
-                    profile_id=None, identities=[], raw_scores={}, interest_scores={}, segments=[]
-                )
-
-            # B. FETCH SCORES
-            if profile_id:
-                score_sql = """
-                    SELECT product_id, raw_score, interest_score 
-                    FROM product_recommendations WHERE profile_id = %s
-                """
-                cursor = conn.cursor()
-                cursor.execute(score_sql, (profile_id,))
-                rows = cursor.fetchall()
-                
-                for r in rows:
-                    # Handle Dict/Tuple for scores too
-                    if isinstance(r, (tuple, list)):
-                        p_id, raw, interest = r[0], r[1], r[2]
-                    else:
-                        p_id = r['product_id']
-                        raw = r['raw_score']
-                        interest = r['interest_score']
-
-                    if p_id:
-                        raw_map[p_id] = float(raw or 0.0)
-                        interest_map[p_id] = float(interest or 0.0)
-                cursor.close()
-
-        except Exception as e:
-            # Enhanced logging to see the type if it fails again
-            logger.error(f"SQL Error for {clean_key} | Type: {type(e)} | Msg: {e}")
-            raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
-
-        return UserProfileInterestResponse(
-            profile_id=profile_id,
-            identities=final_identities,
-            primary_email=primary_email,
-            raw_scores=raw_map,
-            interest_scores=interest_map,
-            segments=final_segments
-        )
-
-    # ========================================================
-    # ⚠️ THIS WAS MISSING: RETURN THE ROUTER OBJECT
-    # ========================================================
     return router

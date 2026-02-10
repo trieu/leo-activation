@@ -1091,7 +1091,7 @@ CREATE TABLE IF NOT EXISTS product_recommendations (
     -- Context
     journey_map_id          TEXT NOT NULL,
     journey_stage_id        TEXT NOT NULL, -- e.g. "new-customer"
-    recommendation_context  TEXT,           -- homepage | email | in_app
+    recommendation_context  TEXT,          -- homepage | email | in_app
 
     -- What
     product_id              TEXT NOT NULL,
@@ -1107,6 +1107,7 @@ CREATE TABLE IF NOT EXISTS product_recommendations (
     recommendation_model    TEXT NOT NULL, -- rule_v1 | ml_cf_v3
     model_version           TEXT,
     reason_codes            JSONB,          -- explainability
+    next_best_action        TEXT,           -- e.g. "STRONG_BUY", "WATCHLIST_SUGGESTION"
 
     -- Freshness
     last_interaction_at     TIMESTAMPTZ,
