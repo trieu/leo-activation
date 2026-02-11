@@ -9,44 +9,43 @@ from typing import Dict, Any, List, Tuple
 from data_utils.settings import DatabaseSettings
 
 # REUSE: Import strict logic from the existing worker
-try:
-    from agentic_tools.interest_score import resolve_ids
-except ImportError:
-    try:
-        from interest_score import resolve_ids
-    except ImportError:
-        logging.error("CRITICAL: Could not import 'resolve_ids' from interest_score.py")
-        sys.exit(1)
+
+from agentic_tools.interest_score import resolve_ids
+
+# Import the separated logic engines
+from agentic_tools.recommendation_system.predictive_engine import predict_user_event
+from agentic_tools.recommendation_system.prescriptive_engine import recommend_system_action
 
 logger = logging.getLogger("agentic_tools.nba_engine")
 
 # --- Configuration ---
-SCORE_THRESHOLD_HOT = 0.5
-SCORE_THRESHOLD_WARM = 0.2
-PERSONA_ACTIVE_TRADER = "High-Frequency Traders"
+SCORE_THRESHOLD_WARM = 0.3
 
 # Context
 TARGET_TENANT = os.getenv("TARGET_TENANT", "master")
 TARGET_SEGMENT = os.getenv("TARGET_SEGMENT", "Active in last 3 months")
 
-# --- CORE LOGIC (Pure Python) ---
-def determine_action(score: float, segment_names: list) -> Tuple[str, str, str]:
+# --- CORE PIPELINE LOGIC ---
+def run_hybrid_pipeline(score: float, segment_names: list) -> Dict[str, Any]:
     """
-    Pure logic function: Decides the Action based on Score + Segments.
-    Returns: (Action, Channel, Reason)
+    Orchestrates the flow: 
+    1. Ask Predictive Engine: "What will they do?" (NLA)
+    2. Ask Prescriptive Engine: "What should we do?" (NBA)
     """
-    is_active_trader = PERSONA_ACTIVE_TRADER in segment_names
+    # Step A: Prediction (NLA)
+    pred_event, pred_prob = predict_user_event(score, segment_names)
 
-    if score >= SCORE_THRESHOLD_HOT:
-        return "STRONG_BUY", "PUSH_NOTIFICATION", f"High Urgency (Score: {score:.2f})"
-    
-    elif SCORE_THRESHOLD_WARM <= score < SCORE_THRESHOLD_HOT:
-        if is_active_trader:
-            return "MOMENTUM_ALERT", "IN_APP_BANNER", f"Active Trader Interest (Score: {score:.2f})"
-        else:
-            return "WATCHLIST_SUGGESTION", "EMAIL_DIGEST", f"Passive Investor Interest (Score: {score:.2f})"
-            
-    return "WAIT", "NONE", "Score below threshold"
+    # Step B: Prescription (NBA)
+    nba_action, channel, nba_conf, reason = recommend_system_action(score, pred_event)
+
+    return {
+        "predicted_user_event": pred_event,
+        "prediction_probability": pred_prob,
+        "next_best_action": nba_action,
+        "nba_confidence": nba_conf,
+        "channel": channel,
+        "reason": reason
+    }
 
 # --- SINGLE LOOKUP (Read-Only for API) ---
 def get_next_best_action(conn, tenant_uuid: str, profile_id: str) -> Dict[str, Any]:
@@ -76,9 +75,9 @@ def get_next_best_action(conn, tenant_uuid: str, profile_id: str) -> Dict[str, A
             return {
                 "profile_id": profile_id,
                 "ticker": None,
-                "action": "WAIT",
+                "next_best_action": "WAIT",
+                "nba_confidence": 0.0,
                 "channel": "NONE",
-                "confidence_score": 0.0,
                 "reason": "No interest scores above threshold."
             }
 
@@ -96,23 +95,26 @@ def get_next_best_action(conn, tenant_uuid: str, profile_id: str) -> Dict[str, A
             data = raw_segments if isinstance(raw_segments, list) else json.loads(raw_segments)
             segment_names = [s.get('name') for s in data if isinstance(s, dict)]
 
-        action, channel, reason = determine_action(score, segment_names)
+        # Run Pipeline
+        result = run_hybrid_pipeline(score, segment_names)
 
         return {
             "profile_id": profile_id,
             "ticker": ticker,
-            "action": action,
-            "channel": channel,
-            "confidence_score": score,
-            "reason": reason
+            "next_best_action": result["next_best_action"],
+            "nba_confidence": result["nba_confidence"],
+            "predicted_user_event": result["predicted_user_event"],
+            "prediction_probability": result["prediction_probability"],
+            "channel": result["channel"],
+            "reason": result["reason"]
         }
 
 # --- BATCH PROCESSOR (Writes Action to DB) ---
 def run_batch_nba_update(settings: DatabaseSettings):
     """
     1. Scans Tenant for top prospects.
-    2. Calculates Next Best Action.
-    3. UPDATES the 'next_best_action' column in 'product_recommendations'.
+    2. Calculates Hybrid Recommendation (NLA + NBA).
+    3. UPDATES all 4 columns in 'product_recommendations'.
     """
     conn = settings.get_pg_connection()
     updated_count = 0
@@ -143,10 +145,13 @@ def run_batch_nba_update(settings: DatabaseSettings):
             ORDER BY r.profile_id, r.interest_score DESC;
         """
 
-        # 3. Prepared Update Statement
+        # 3. Prepared Update Statement (Hybrid Schema)
         update_sql = """
             UPDATE product_recommendations
             SET next_best_action = %s,
+                nba_confidence = %s,
+                predicted_user_event = %s,
+                prediction_probability = %s,
                 updated_at = NOW()
             WHERE tenant_id = %s
               AND profile_id = %s
@@ -183,13 +188,16 @@ def run_batch_nba_update(settings: DatabaseSettings):
                     data = raw_segments if isinstance(raw_segments, list) else json.loads(raw_segments)
                     segment_names = [s.get('name') for s in data if isinstance(s, dict)]
 
-                # Determine Action
-                action, _, _ = determine_action(score, segment_names)
+                # Run Pipeline
+                result = run_hybrid_pipeline(score, segment_names)
                 
                 # C. Execute Update
-                if action != "WAIT":
+                if result["next_best_action"] != "WAIT":
                     cur.execute(update_sql, (
-                        action,         # SET next_best_action
+                        result["next_best_action"],
+                        result["nba_confidence"],
+                        result["predicted_user_event"],
+                        result["prediction_probability"],
                         str(tenant_uuid),
                         p_id,
                         prod_id,
@@ -201,7 +209,7 @@ def run_batch_nba_update(settings: DatabaseSettings):
             
             conn.commit()
         
-        logger.info(f"✅ Batch Update Complete. Updated {updated_count} rows with Next Best Action.")
+        logger.info(f"✅ Batch Update Complete. Updated {updated_count} rows with Hybrid Actions.")
 
     except Exception as e:
         conn.rollback()

@@ -1103,12 +1103,19 @@ CREATE TABLE IF NOT EXISTS product_recommendations (
     interest_score          NUMERIC(5,4)  NOT NULL DEFAULT 0, -- 0.0000 → 1.0000
     rank_position           INTEGER,
 
+    -- 1. Predictive (The User)
+    predicted_user_event   TEXT,          -- e.g. "churn", "order-created"
+    prediction_probability NUMERIC(5,4),  -- e.g. 0.85
+
+    -- 2. Prescriptive (The System)
+    next_best_action       TEXT,          -- e.g. "SEND_RETENTION_EMAIL"
+    nba_confidence         NUMERIC(5,4),  -- e.g. 0.99 (Confidence in the recommendation)
+
     -- Model / logic
     recommendation_model    TEXT NOT NULL, -- rule_v1 | ml_cf_v3
     model_version           TEXT,
     reason_codes            JSONB,          -- explainability
-    next_best_action        TEXT,           -- e.g. "STRONG_BUY", "WATCHLIST_SUGGESTION"
-
+    
     -- Freshness
     last_interaction_at     TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),

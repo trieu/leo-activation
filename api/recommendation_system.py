@@ -16,7 +16,7 @@ try:
         get_interested_users, 
         get_profile_affinity
     )
-    from agentic_tools.next_best_action import get_next_best_action
+    from agentic_tools.recommendation_orchestrator import get_next_best_action
 except ImportError as e:
     import logging
     logging.warning(f"⚠️ Worker modules missing: {e}. Recommendation endpoints will fail.")
@@ -62,6 +62,14 @@ class NextBestActionResponse(BaseModel):
     action: str = Field(..., description="The recommended action (e.g., STRONG_BUY, WATCHLIST)")
     channel: str = Field(..., description="The engagement channel (e.g., PUSH, EMAIL)")
     confidence_score: float
+    reason: str
+
+class NextLikelyActionResponse(BaseModel):
+    """Predictive: What the USER will likely do."""
+    profile_id: str
+    ticker: Optional[str] = None
+    predicted_user_event: str = Field(..., description="The forecasted user behavior")
+    prediction_probability: float = Field(..., description="Confidence score (0.0 - 1.0)")
     reason: str
 
 
@@ -158,4 +166,34 @@ async def get_nba_endpoint(
 
     except Exception as e:
         logger.error(f"❌ NBA Error for '{user_id}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 4. NEXT LIKELY ACTION (Predictive - What THEY do)
+@router.get("/nla/{user_id}", response_model=NextLikelyActionResponse)
+async def get_nla_endpoint(
+    user_id: str = Path(..., description="The target User Profile ID"),
+    conn: psycopg.Connection = Depends(get_db)
+):
+    """
+    Returns the forecasted next user event and its probability.
+    """
+    try:
+        target_tenant = os.getenv("TARGET_TENANT", "master")
+        tenant_uuid, _ = resolve_ids(conn, target_tenant, "Active in last 3 months")
+
+        # We reuse the same orchestrator function because it calculates the entire pipeline.
+        # This avoids code duplication or running two separate queries.
+        result = get_next_best_action(conn, tenant_uuid, user_id)
+
+        # We extract only the PREDICTIVE fields for this endpoint
+        return NextLikelyActionResponse(
+            profile_id=user_id,
+            ticker=result.get("ticker"),
+            predicted_user_event=result.get("predicted_user_event", "unknown"),
+            prediction_probability=result.get("prediction_probability", 0.0),
+            reason=result.get("reason", "No Data")
+        )
+
+    except Exception as e:
+        logger.error(f"❌ NLA Error for '{user_id}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
