@@ -1,6 +1,6 @@
 # repositories/arango_profile_repository.py
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional, Any
 
 from data_models.arango_profile import CDP_PROFILE_QUERY, ArangoProfile
 
@@ -55,3 +55,58 @@ class ArangoProfileRepository:
 
         logger.info("[ArangoDB] Loaded %d profiles for segment %s at start_index %d", len(profiles), segment_id, start_index)
         return profiles
+
+    def get_profile_segment_names(self, profile_id: str) -> List[str]:
+            """
+            Fetches the list of segment names a specific profile belongs to.
+            Corresponds to the router logic: p.inSegments[*].name
+            """
+            aql = """
+                FOR p IN cdp_profile
+                    FILTER p._key == @profile_id
+                    RETURN p.inSegments[*].name
+            """
+            
+            try:
+                cursor = self.db.aql.execute(aql, bind_vars={'profile_id': profile_id})
+                result = [doc for doc in cursor]
+                
+                # The query returns a list containing one list: [ ["Segment A", "Segment B"] ]
+                if result and result[0]:
+                    return result[0]
+                return []
+                
+            except Exception as e:
+                logger.error(f"[ArangoDB] Failed to fetch segments for profile {profile_id}: {e}")
+                return []
+            
+            
+    def find_profile_by_identifier(self, identifier: str) -> Optional[Dict[str, Any]]:
+        """
+        Searches for a profile by _key, primaryEmail, or an identity in the identities array.
+        Returns a dictionary with the canonical key, emails, identities, and segment names.
+        """
+        # This AQL checks if the input matches the ID, the Email, OR is contained in the identities array
+        aql = """
+            FOR p IN cdp_profile
+                FILTER p._key == @val OR p.primaryEmail == @val OR @val IN p.identities
+                LIMIT 1
+                RETURN {
+                    canonical_key: p._key,
+                    primary_email: p.primaryEmail,
+                    identities: p.identities,
+                    segments: p.inSegments[*].name
+                }
+        """
+        
+        try:
+            cursor = self.db.aql.execute(aql, bind_vars={'val': identifier})
+            result = [doc for doc in cursor]
+            
+            if result:
+                return result[0]
+            return None
+            
+        except Exception as e:
+            logger.error(f"[ArangoDB] Failed to resolve profile for identifier '{identifier}': {e}")
+            return None

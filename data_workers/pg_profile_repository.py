@@ -208,3 +208,55 @@ class PGProfileRepository:
     def search_profiles_by_job_title(self, tenant_id: str, job_title: str) -> List[Dict[str, Any]]:
         sql = "SELECT * FROM cdp_profiles WHERE tenant_id = %s AND job_titles ? %s"
         return self._execute_fetch(sql, (tenant_id, job_title))
+    
+    def find_profile_data(self, lookup_key: str) -> Optional[Dict[str, Any]]:
+        """
+        Searches cdp_profiles by profile_id, primary_email, or an identity string.
+        """
+        # 1. Sanitize the input (CRITICAL fix for "not found" issues)
+        clean_key = lookup_key.strip()
+        
+        sql = """
+            SELECT 
+                profile_id,
+                primary_email,
+                identities,
+                segments
+            FROM cdp_profiles
+            WHERE profile_id = %s
+               OR primary_email = %s
+               -- CAST to jsonb to prevent "operator does not exist" errors
+               OR identities::jsonb ? %s 
+            LIMIT 1
+        """
+        
+        try:
+            # 2. Use clean_key
+            results = self._execute_fetch(sql, (clean_key, clean_key, clean_key))
+            return results[0] if results else None
+            
+        except Exception as e:
+            # 3. LOG THE REAL ERROR. 
+            # If this prints "operator does not exist", your column is 'json', not 'jsonb'.
+            logger.error(f"❌ [Postgres CRITICAL] Query failed for '{clean_key}': {e}")
+            # Raise the error temporarily during testing so you see it in the API response 500
+            raise e
+
+    def get_product_scores(self, profile_id: str) -> List[Dict[str, Any]]:
+        """
+        Fetches scores from the product_recommendations table.
+        Maps 'product_id' to the API's expected 'ticker' concept.
+        """
+        sql = """
+            SELECT 
+                product_id, 
+                raw_score, 
+                interest_score 
+            FROM product_recommendations 
+            WHERE profile_id = %s
+        """
+        try:
+            return self._execute_fetch(sql, (profile_id,))
+        except Exception as e:
+            logger.error(f"[Postgres] Failed to fetch scores for {profile_id}: {e}")
+            return []
