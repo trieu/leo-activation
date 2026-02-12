@@ -12,8 +12,8 @@ logger = logging.getLogger("agentic_tools.data_enrichment")
 
 # --- Configuration ---
 HALF_LIFE_DAYS = 7.0
-SCORE_THRESHOLD = 0.01 
-SCORING_K_FACTOR = 100.0
+SCORE_THRESHOLD = 0.05
+SCORING_K_FACTOR = 50.0
 
 # Get Targets from Environment
 TARGET_TENANT = os.getenv("TARGET_TENANT", "master")
