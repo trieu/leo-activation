@@ -24,36 +24,49 @@ from typing import Tuple, List
 
 # Personas
 PERSONA_ACTIVE_TRADER = "High-Frequency Traders"
-PERSONA_PASSIVE_INVESTOR = "Passive Investors"
 
 def predict_user_event(score: float, segment_names: List[str]) -> Tuple[str, float]:
     """
-    Determines the Next Likely Action (NLA) of the user.
+    Determines the Next Likely Action (NLA) of the user based on 4 tiers of interest.
     """
     is_active_trader = PERSONA_ACTIVE_TRADER in segment_names
 
     # ----------------------------------------
     # SCENARIO 1: High Intent (Hot Lead)
+    # Range: 0.7 <= Score <= 1.0
     # ----------------------------------------
-    if score >= 0.5:
+    if score >= 0.7:
+        # Extremely high scores get a probability boost
+        confidence = 0.95 if score >= 0.9 else 0.85
+
         if is_active_trader:
-            # Active traders execute quickly when interest is high
-            return "order-created", 0.92
+            # Active traders are likely to execute
+            return "order-created", confidence
         else:
-            # Passive investors need to view details/charts first
-            return "ticker-view", 0.85
+            # Passive investors are likely to research deeply
+            return "ticker-view", confidence
 
     # ----------------------------------------
     # SCENARIO 2: Consideration (Warm Lead)
+    # Range: 0.5 <= Score < 0.7
     # ----------------------------------------
-    elif 0.3 <= score < 0.5:
-        # User is interested but not committed. Likely to monitor.
-        return "watchlist-add", 0.65
+    elif score >= 0.5:
+        # Strong enough to monitor, not strong enough to buy yet
+        return "watchlist-add", 0.70
 
     # ----------------------------------------
-    # SCENARIO 3: Low Intent (Cold / Churn)
+    # SCENARIO 3: Low Intent (Discovery)
+    # Range: 0.1 <= Score < 0.5
+    # ----------------------------------------
+    elif score >= 0.1:
+        # They looked at it, but interest is weak. 
+        # Prediction: They might search for it again or add it if prompted.
+        return "search", 0.60 
+
+    # ----------------------------------------
+    # SCENARIO 4: Noise (Ignore)
+    # Range: 0.0 <= Score < 0.1
     # ----------------------------------------
     else:
-        # Score is too low to predict specific engagement.
-        # High risk of ignoring the app or churning.
-        return "ignore_content", 0.80
+        # Score is too low (noise). Likely to ignore content.
+        return "ignore-content", 0.90

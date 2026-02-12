@@ -30,41 +30,62 @@ def recommend_system_action(score: float, predicted_event: str) -> Tuple[str, st
     Returns: (Action, Channel, Confidence, Reason)
     """
     
-    # STRATEGY 1: CAPTURE (User is ready to buy)
-    # Goal: Remove friction and close the deal immediately.
-    if predicted_event == "place_order":
+    # ----------------------------------------
+    # STRATEGY 1: CAPTURE (High Intent / Active)
+    # ----------------------------------------
+    # Event: 'order-created' 
+    # Context: User is likely an Active Trader with High Interest (Score >= 0.5)
+    if predicted_event == "order-created":
         return (
             "STRONG_BUY_ALERT", 
             "PUSH_NOTIFICATION", 
-            0.7, 
-            "User intent is high (Place Order). Nudge to execute."
+            0.95, 
+            "High intent detected. Nudge to execute order."
         )
 
-    # STRATEGY 2: NURTURE (User is researching)
-    # Goal: Provide value/information to build confidence.
-    if predicted_event == "view_ticker_details":
+    # ----------------------------------------
+    # STRATEGY 2: NURTURE (High Intent / Passive)
+    # ----------------------------------------
+    # Event: 'ticker-view'
+    # Context: User has High Interest (Score >= 0.7) but needs fundamental data.
+    if predicted_event == "ticker-view":
         return (
             "SEND_ANALYST_REPORT", 
             "EMAIL_DIGEST", 
-            0.50, 
-            "User is researching. Provide fundamental data."
+            0.85, 
+            "User is interested but needs validation. Send report."
         )
 
-    # STRATEGY 3: RETAIN (User is watching)
-    # Goal: Keep the product top-of-mind without being annoying.
-    if predicted_event == "add_to_watchlist":
+    # ----------------------------------------
+    # STRATEGY 3: RETAIN (Consideration)
+    # ----------------------------------------
+    # Event: 'watchlist-add'
+    # Context: User is in the 'Warm' zone (Score 0.1 - 0.7).
+    if predicted_event == "watchlist-add":
         return (
             "WATCHLIST_SUGGESTION", 
             "IN_APP_BANNER", 
-            0.30, 
+            0.70, 
             "User is in consideration phase. Suggest monitoring."
         )
+    
+    # STRATEGY 4: DISCOVERY (Low Intent)
+    if predicted_event == "search":
+        return (
+            "DISCOVERY_NUDGE", 
+            "IN_APP_FEED", 
+            0.50, 
+            "User has low interest. Show in feed to spark curiosity."
+        )
 
-    # STRATEGY 4: IGNORE (Low Value)
-    # Goal: Do not spam users with low intent.
+    # ----------------------------------------
+    # STRATEGY 5: IGNORE (Low Value)
+    # ----------------------------------------
+    # Event: 'ignore_content'
+    # Context: User score is < 0.1. Do not spam.
     return (
         "WAIT", 
         "NONE", 
         0.0, 
-        f"Predicted event '{predicted_event}' does not warrant intervention."
+        f"Score ({score:.2f}) is too low for intervention."
     )

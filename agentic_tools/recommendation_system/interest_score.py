@@ -347,13 +347,14 @@ def get_profile_affinity(conn, tenant_uuid: str, lookup_key: str) -> Dict[str, A
     # 2. Fetch Scores for this Profile
     # Using the resolved profile_id from step 1
     score_sql = """
-        SELECT product_id, raw_score, interest_score 
+        SELECT product_id, raw_score, interest_score, predicted_user_event
         FROM product_recommendations 
         WHERE tenant_id = %s AND profile_id = %s
     """
     
     raw_map = {}
     interest_map = {}
+    nla_map = {}
     
     with conn.cursor() as cur:
         cur.execute(score_sql, (tenant_uuid, profile_data['profile_id']))
@@ -361,13 +362,14 @@ def get_profile_affinity(conn, tenant_uuid: str, lookup_key: str) -> Dict[str, A
         
         for r in rows:
             if isinstance(r, dict):
-                pid, raw, interest = r['product_id'], r['raw_score'], r['interest_score']
+                pid, raw, interest, nla = r['product_id'], r['raw_score'], r['interest_score'], r['predicted_user_event']
             else:
-                pid, raw, interest = r[0], r[1], r[2]
+                pid, raw, interest, nla = r[0], r[1], r[2], r[3]
                 
             if pid:
                 raw_map[pid] = float(raw or 0.0)
                 interest_map[pid] = float(interest or 0.0)
+                nla_map[pid] = str(nla) if nla else ""
 
     # 3. Format Output
     # Parse Identities
@@ -390,6 +392,7 @@ def get_profile_affinity(conn, tenant_uuid: str, lookup_key: str) -> Dict[str, A
         "primary_email": profile_data.get('primary_email'),
         "raw_scores": raw_map,
         "interest_scores": interest_map,
+        "next_likely_actions": nla_map,
         "segments": final_segments
     }
 

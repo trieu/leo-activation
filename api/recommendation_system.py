@@ -1,5 +1,6 @@
 import logging
 import os
+from unittest import result
 import psycopg
 from typing import List, Dict, Any, Optional, Union
 from fastapi import APIRouter, HTTPException, Path, Query, Depends
@@ -11,12 +12,13 @@ from data_utils.settings import DatabaseSettings
 # Import Workers (The Logic Layer)
 # We handle import errors gracefully to prevent crashing if workers aren't ready
 try:
-    from agentic_tools.interest_score import (
+    from agentic_tools.recommendation_system.interest_score import (
         resolve_ids, 
         get_interested_users, 
         get_profile_affinity
     )
     from agentic_tools.recommendation_orchestrator import get_next_best_action
+    from agentic_tools.recommendation_orchestrator import get_next_likely_action
 except ImportError as e:
     import logging
     logging.warning(f"⚠️ Worker modules missing: {e}. Recommendation endpoints will fail.")
@@ -53,24 +55,30 @@ class UserProfileInterestResponse(BaseModel):
     primary_email: Optional[str] = None
     raw_scores: Dict[str, float]
     interest_scores: Dict[str, float]
+    next_likely_actions: Dict[str, str]
     segments: List[str]
 
+class ActionDetail(BaseModel):
+    """Details for a specific stock's recommended action"""
+    action: str
+    channel: str
+    confidence_score: float
+    reason: str
+    
 class NextBestActionResponse(BaseModel):
     """Standardized response for the NBA decision engine."""
     profile_id: str
-    ticker: Optional[str] = None
-    action: str = Field(..., description="The recommended action (e.g., STRONG_BUY, WATCHLIST)")
-    channel: str = Field(..., description="The engagement channel (e.g., PUSH, EMAIL)")
+    next_best_actions: Dict[str, ActionDetail]
+
+class LikelyActionDetail(BaseModel):
+    """Details for a specific stock's recommended action"""
+    action: str
     confidence_score: float
-    reason: str
 
 class NextLikelyActionResponse(BaseModel):
     """Predictive: What the USER will likely do."""
     profile_id: str
-    ticker: Optional[str] = None
-    predicted_user_event: str = Field(..., description="The forecasted user behavior")
-    prediction_probability: float = Field(..., description="Confidence score (0.0 - 1.0)")
-    reason: str
+    next_likely_actions: Dict[str, LikelyActionDetail]
 
 
 # ============================================================
@@ -126,7 +134,12 @@ async def get_profile_affinity_endpoint(
         if not data:
             # Return empty structure if not found
             return UserProfileInterestResponse(
-                profile_id=None, identities=[], raw_scores={}, interest_scores={}, segments=[]
+                profile_id=None, 
+                identities=[], 
+                raw_scores={}, 
+                interest_scores={}, 
+                next_likely_actions={}, 
+                segments=[]
             )
             
         return UserProfileInterestResponse(**data)
@@ -157,11 +170,7 @@ async def get_nba_endpoint(
 
         return NextBestActionResponse(
             profile_id=result["profile_id"],
-            ticker=result["ticker"],
-            action=result["action"],
-            channel=result["channel"],
-            confidence_score=result["confidence_score"],
-            reason=result["reason"]
+            next_best_actions=result["next_best_actions"]
         )
 
     except Exception as e:
@@ -183,15 +192,12 @@ async def get_nla_endpoint(
 
         # We reuse the same orchestrator function because it calculates the entire pipeline.
         # This avoids code duplication or running two separate queries.
-        result = get_next_best_action(conn, tenant_uuid, user_id)
+        result = get_next_likely_action(conn, tenant_uuid, user_id)
 
         # We extract only the PREDICTIVE fields for this endpoint
         return NextLikelyActionResponse(
-            profile_id=user_id,
-            ticker=result.get("ticker"),
-            predicted_user_event=result.get("predicted_user_event", "unknown"),
-            prediction_probability=result.get("prediction_probability", 0.0),
-            reason=result.get("reason", "No Data")
+            profile_id=result["profile_id"],
+            next_likely_actions=result["next_likely_actions"]
         )
 
     except Exception as e:
