@@ -109,28 +109,37 @@ HELP_MESSAGE = f"Please refer to the documentation at {HELP_DOCUMENTATION_URL} f
 
 
 # ============================================================
-# New Tool Definition (Wrapper)
+# Tool Implementations
 # ============================================================
 
-def sync_segment_to_db(segment_id: str) -> str:
+def sync_segment_to_db(segment_name: str, segment_id: str) -> str:
     """
-    Synchronizes customer profiles from LEO CDP (ArangoDB) to the Activation Database (PostgreSQL).
-    
-    Use this tool when the user asks to "sync", "update", "refresh", or "import" data for a specific segment.
-    
+    To copy or synchronize customer profiles from CDP (ArangoDB) to the Activation Database (PostgreSQL).
+
     Args:
-        segment_id (str): The unique identifier of the segment to sync.
-        
+        segment_name: The name of the segment to synchronize.
+        segment_id: The unique identifier of the segment to synchronize.
+
     Returns:
-        str: A status message indicating success or failure.
+        A status message indicating the success or failure of the synchronization process.
     """
+    
     try:
         logger.info(f"Agent triggering sync for segment: {segment_id}")
-        run_synch_profiles(segment_id=segment_id)
-        return f"Successfully synchronized profiles for segment '{segment_id}' from LEO CDP to PostgreSQL."
+        run_synch_profiles(segment_name=segment_name, segment_id=segment_id)
+
+        return (
+            f"Successfully synchronized profiles for segment "
+            f"'{segment_id}' from LEO CDP to PostgreSQL."
+        )
+
     except Exception as e:
         logger.exception(f"Sync failed for segment {segment_id}")
-        return f"Failed to synchronize segment '{segment_id}'. Error: {str(e)}"
+
+        return (
+            f"Failed to synchronize segment '{segment_id}'. "
+            f"Error: {str(e)}"
+        )
 
 
 # ============================================================
@@ -160,7 +169,7 @@ def create_api_router(agent_router: AgentRouter) -> APIRouter:
         activate_channel,
         analyze_segment,
         show_all_segments,
-        sync_segment_to_db  # <--- NEW TOOL REGISTERED HERE
+        sync_segment_to_db  
     ]
     
     # 2. Map Tool Names to Actual Functions
@@ -170,7 +179,7 @@ def create_api_router(agent_router: AgentRouter) -> APIRouter:
     local_tools = {
         "show_all_segments": show_all_segments,
         "analyze_segment": analyze_segment,
-        "sync_segment_to_db": sync_segment_to_db,  # <--- NEW TOOL MAPPED HERE
+        "sync_segment_to_db": sync_segment_to_db,  
     }
     
     for name, func in local_tools.items():
