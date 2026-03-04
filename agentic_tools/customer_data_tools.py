@@ -1,9 +1,48 @@
 import logging
 from typing import Dict, Literal, Any, Optional
 
+from data_workers.sync_segment_profiles import run_synch_profiles
+
+
+
 # Configure logger
 logger = logging.getLogger("agentic_tools.customer_data")
 
+
+
+# ============================================================
+# Tool Implementations
+# ============================================================
+
+def sync_segment_to_db(segment_id: str, segment_name: str = "") -> str:
+    """
+    Synchronize the segment with the required ID: {segment_id} and the optional name: {segment_name}. <br>
+    Customer profiles will be synchronized from the CDP (ArangoDB) to the Activation Database (PostgreSQL).
+    
+    Args:
+        segment_name: The name of the segment to synchronize.
+        segment_id: The unique identifier of the segment to synchronize.
+
+    Returns:
+        A status message indicating the success or failure of the synchronization process.
+    """
+    
+    try:
+        logger.info(f"Agent triggering sync for segment: {segment_id}")
+        run_synch_profiles(segment_name=segment_name, segment_id=segment_id)
+
+        return (
+            f"Successfully synchronized profiles for segment "
+            f"'{segment_id}' from LEO CDP to PostgreSQL."
+        )
+
+    except Exception as e:
+        logger.exception(f"Sync failed for segment {segment_id}")
+
+        return (
+            f"Failed to synchronize segment '{segment_id}'. "
+            f"Error: {str(e)}"
+        )
 
 def show_all_segments(tenant_id: Optional[str] = None, limit: Optional[int] = 5) -> Dict[str, str]:
     """
@@ -38,8 +77,7 @@ def manage_cdp_segment(
     or delete segments that are no longer needed.
 
     Args:
-        segment_identifier: The exact name (e.g., "High Value Users") or 
-            the unique ID (e.g., "seg_12345") of the segment.
+        segment_identifier: The exact name (e.g., "High Value Users") or the unique ID (e.g., "seg_12345") of the segment.
         action: The specific operation to perform.
             - 'create': Makes a new segment.
             - 'update': Modifies an existing segment.

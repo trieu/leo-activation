@@ -7,6 +7,7 @@ from agentic_tools.data_enrichment_tools import analyze_segment
 from agentic_tools.datetime_tools import get_date
 from agentic_tools.marketing_tools import activate_channel, get_marketing_events
 from agentic_tools.weather_tools import get_current_weather
+from api.handlers import sync_segment_to_db
 
 
 # =====================================================
@@ -22,4 +23,5 @@ AVAILABLE_TOOLS: Dict[str, Any] = {
     "analyze_segment": analyze_segment,
     "show_all_segments": show_all_segments,
     "activate_channel": activate_channel,
+    "sync_segment_to_db": sync_segment_to_db
 }

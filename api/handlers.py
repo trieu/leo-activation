@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 # --- IMPORTS ---
 from agentic_models.router import AgentRouter
 from agentic_tools.alert_center_tools import get_alert_types
-from agentic_tools.customer_data_tools import show_all_segments
+from agentic_tools.customer_data_tools import show_all_segments, sync_segment_to_db
 from agentic_tools.data_enrichment_tools import analyze_segment
 from agentic_tools.marketing_tools import get_marketing_events
 from agentic_tools.tools import (
@@ -30,17 +30,9 @@ from agentic_tools.tools import (
 )
 from agentic_tools.channels.zalo import ZaloOAChannel
 from data_workers.sync_segment_profiles import run_synch_profiles_async
+from data_workers.sync_segment_profiles import run_synch_profiles
 from main_configs import DATA_SYNC_API_KEY
 
-# Import the worker function from the original script
-# Ensure your project structure allows this import
-try:
-    from data_workers.sync_segment_profiles import run_synch_profiles
-except ImportError:
-    # Fallback/Mock for development if the worker module isn't in pythonpath
-    logging.warning("Could not import 'run_synch_profiles'. Sync features will fail if called.")
-    def run_synch_profiles(segment_id: str):
-        raise NotImplementedError("Worker module not found.")
 
 logger = logging.getLogger("LEO Activation API")
 
@@ -108,39 +100,6 @@ HELP_DOCUMENTATION_URL = '<a href="https://leocdp.com/documents" target="_blank"
 HELP_MESSAGE = f"Please refer to the documentation at {HELP_DOCUMENTATION_URL} for assistance."
 
 
-# ============================================================
-# Tool Implementations
-# ============================================================
-
-def sync_segment_to_db(segment_name: str, segment_id: str) -> str:
-    """
-    To copy or synchronize customer profiles from CDP (ArangoDB) to the Activation Database (PostgreSQL).
-
-    Args:
-        segment_name: The name of the segment to synchronize.
-        segment_id: The unique identifier of the segment to synchronize.
-
-    Returns:
-        A status message indicating the success or failure of the synchronization process.
-    """
-    
-    try:
-        logger.info(f"Agent triggering sync for segment: {segment_id}")
-        run_synch_profiles(segment_name=segment_name, segment_id=segment_id)
-
-        return (
-            f"Successfully synchronized profiles for segment "
-            f"'{segment_id}' from LEO CDP to PostgreSQL."
-        )
-
-    except Exception as e:
-        logger.exception(f"Sync failed for segment {segment_id}")
-
-        return (
-            f"Failed to synchronize segment '{segment_id}'. "
-            f"Error: {str(e)}"
-        )
-
 
 # ============================================================
 # Router Setup
@@ -159,7 +118,6 @@ def create_api_router(agent_router: AgentRouter) -> APIRouter:
     router = APIRouter()
 
     # 1. Define the List of Tools available to the Agent
-    # Added 'sync_segment_to_db' to the list so the AI knows about it.
     tools = [
         get_date,
         get_current_weather,
