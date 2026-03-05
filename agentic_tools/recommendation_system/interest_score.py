@@ -22,6 +22,7 @@ TARGET_SEGMENT = os.getenv("TARGET_SEGMENT", "Active in last 3 months")
 DUMMY_JOURNEY_MAP_ID = "default_journey_map"
 DUMMY_JOURNEY_STAGE_ID = "default_stage"
 DUMMY_REC_MODEL = "default_model"
+DUMMY_PRODUCT_TYPE = "stock"
 
 # --- 1. ID RESOLUTION (PostgreSQL Source of Truth) ---
 def resolve_ids(conn, tenant_name: str, segment_name: str) -> tuple:
@@ -174,11 +175,12 @@ def run_batch_scoring_job(settings: DatabaseSettings, start_time: str, end_time:
                     FROM product_recommendations 
                     WHERE profile_id = %s 
                       AND product_id = %s 
+                      AND product_type = %s
                       AND tenant_id = %s
                       AND journey_map_id = %s
                       AND journey_stage_id = %s
                       AND recommendation_model = %s
-                """, (profile_id, product_id, tenant_uuid, 
+                """, (profile_id, product_id, DUMMY_PRODUCT_TYPE, tenant_uuid, 
                       DUMMY_JOURNEY_MAP_ID, DUMMY_JOURNEY_STAGE_ID, DUMMY_REC_MODEL))
                 
                 record = cur.fetchone()
@@ -212,22 +214,22 @@ def run_batch_scoring_job(settings: DatabaseSettings, start_time: str, end_time:
                 # ADDED: recommendation_model to INSERT and ON CONFLICT
                 upsert_sql = """
                     INSERT INTO product_recommendations (
-                        tenant_id, profile_id, product_id, 
+                        tenant_id, profile_id, product_id, product_type,
                         journey_map_id, journey_stage_id, recommendation_model,
                         raw_score, interest_score, last_interaction_at, updated_at,
                         recommendation_context,
-                        product_type, product_url, rank_position, 
+                        product_url, rank_position, 
                         model_version, reason_codes
                     )
                     VALUES (
-                        %s, %s, %s, 
+                        %s, %s, %s, %s,
                         %s, %s, %s,
                         %s, %s, %s, NOW(),
                         NULL, 
-                        NULL, NULL, NULL, 
+                        NULL, NULL, 
                         NULL, NULL
                     )
-                    ON CONFLICT (tenant_id, profile_id, product_id, journey_map_id, journey_stage_id, recommendation_model) 
+                    ON CONFLICT (tenant_id, profile_id, product_id, product_type, journey_map_id, journey_stage_id, recommendation_model) 
                     DO UPDATE SET 
                         raw_score = EXCLUDED.raw_score, 
                         interest_score = EXCLUDED.interest_score, 
