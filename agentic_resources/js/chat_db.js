@@ -6,6 +6,11 @@
 const SUGGESTIONS_DB = [
 
   // =========================
+  // System & Data Operations
+  // =========================
+  "Synchronize the segment with the required ID: ",
+
+  // =========================
   // Weather / External Info
   // =========================
   "Get current weather for New York City",

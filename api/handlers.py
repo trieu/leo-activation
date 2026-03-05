@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 # --- IMPORTS ---
 from agentic_models.router import AgentRouter
 from agentic_tools.alert_center_tools import get_alert_types
-from agentic_tools.customer_data_tools import show_all_segments
+from agentic_tools.customer_data_tools import show_all_segments, sync_segment_to_db
 from agentic_tools.data_enrichment_tools import analyze_segment
 from agentic_tools.marketing_tools import get_marketing_events
 from agentic_tools.tools import (
@@ -24,6 +24,7 @@ from agentic_tools.tools import (
 )
 from agentic_tools.channels.zalo import ZaloOAChannel
 from data_workers.sync_segment_profiles import run_synch_profiles_async
+from data_workers.sync_segment_profiles import run_synch_profiles
 from main_configs import DATA_SYNC_API_KEY
 
 from api.recommendation_system import router as rec_router

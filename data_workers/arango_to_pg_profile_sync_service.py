@@ -59,7 +59,8 @@ class ArangoToPostgresSyncService:
                     total_synched_profile += 1
 
                 start = self.arango_repo.batch_size + start
-                print(f"Synced profiles at start: {start}")
+                logger.info(f"Synced profiles at start: {start}")
+
                 cdp_profiles = self.arango_repo.fetch_profiles_by_segment(
                     segment_id=segment_id, segment_name=segment_name, start_index=start)
                 size = len(cdp_profiles)
@@ -135,9 +136,8 @@ class ArangoToPostgresSyncService:
             # extensibility (replacement for raw_attributes)
             # -------------------------
             ext_data={
-                "source": "arango",
-                "sync_segment_id": segment_id,
-                "sync_segment_name": segment_name,
+                "source": "leocdp_arangodb",
+                "sync_segment_id": segment_id
             },
         )
 
