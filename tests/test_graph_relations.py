@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 # Boilerplate to load your settings (adjust paths as needed)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from data_utils.db_factory import get_db_context
-from data_utils.settings import DatabaseSettings
+from core.db_factory import get_db_context
+from core.settings import DatabaseSettings
 
 class GraphDataManager:
     def __init__(self, session: Session, graph_name: str = 'investing_knowledge_graph'):

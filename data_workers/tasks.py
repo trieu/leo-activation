@@ -8,7 +8,7 @@ from celery import shared_task
 
 from data_models.dbo_tenant import resolve_tenant_id
 from data_workers.sync_segment_profiles import run_synch_profiles
-from main_configs import CELERY_REDIS_URL
+from core.main_configs import CELERY_REDIS_URL
 
 # --------------------------------------------------
 # Setup

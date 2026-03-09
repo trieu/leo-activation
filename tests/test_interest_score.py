@@ -11,7 +11,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data_models import dbo_tenant
-from data_utils.settings import DatabaseSettings
+from core.settings import DatabaseSettings
 
 logger = logging.getLogger("agentic_tools.data_enrichment.interest_score")
 

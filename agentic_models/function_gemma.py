@@ -6,7 +6,7 @@ import logging
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from huggingface_hub import login
 from agentic_models.base import BaseLLMEngine
-from main_configs import GEMMA_FUNCTION_MODEL_ID, HUGGINGFACE_TOKEN
+from core.main_configs import GEMMA_FUNCTION_MODEL_ID, HUGGINGFACE_TOKEN
 
 # Setup Logging
 logger = logging.getLogger(__name__)

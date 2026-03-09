@@ -4,8 +4,8 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from data_utils.db_factory import get_db_context
-from data_utils.settings import DatabaseSettings
+from core.db_factory import get_db_context
+from core.settings import DatabaseSettings
 
 from data_models.dbo_cdp import CdpProfile
 from sqlalchemy import select

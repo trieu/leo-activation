@@ -31,7 +31,7 @@ from agentic_tools.tools import (
 from agentic_tools.channels.zalo import ZaloOAChannel
 from data_workers.sync_segment_profiles import run_synch_profiles_async
 from data_workers.sync_segment_profiles import run_synch_profiles
-from main_configs import DATA_SYNC_API_KEY
+from core.main_configs import DATA_SYNC_API_KEY
 
 
 logger = logging.getLogger("LEO Activation API")

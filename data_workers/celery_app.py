@@ -1,7 +1,7 @@
 import os
 from celery import Celery
 from celery.schedules import crontab
-from main_configs import CELERY_REDIS_URL, CELERY_SYNC_PROFILES_CRON
+from core.main_configs import CELERY_REDIS_URL, CELERY_SYNC_PROFILES_CRON
 
 
 

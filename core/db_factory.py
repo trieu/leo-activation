@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker, Session
 
-from data_utils.settings import DatabaseSettings
+from core.settings import DatabaseSettings
 
 # 1. Global storage
 _engine = None

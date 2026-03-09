@@ -7,7 +7,7 @@ from email.message import EmailMessage
 from email.utils import formataddr
 
 from agentic_tools.channels.activation import NotificationChannel
-from main_configs import MarketingConfigs
+from core.main_configs import MarketingConfigs
 
 from agentic_tools.channels.helpers import (
     MessageRenderer,

@@ -9,8 +9,8 @@ from sqlalchemy import select, text
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # 2. Imports from your Factory & Models
-from data_utils.db_factory import get_db_context
-from data_utils.settings import DatabaseSettings
+from core.db_factory import get_db_context
+from core.settings import DatabaseSettings
 
 # Import Models
 from data_models.dbo_tenant import Tenant

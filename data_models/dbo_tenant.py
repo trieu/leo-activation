@@ -17,7 +17,7 @@ from sqlalchemy import String, UniqueConstraint, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from data_utils.settings import DatabaseSettings
+from core.settings import DatabaseSettings
 
 
 from .base import Base, TimestampMixin

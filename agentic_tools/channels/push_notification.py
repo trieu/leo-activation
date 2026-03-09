@@ -5,7 +5,7 @@ import requests
 from typing import Dict, Any
 
 from agentic_tools.channels.activation import NotificationChannel
-from main_configs import MarketingConfigs
+from core.main_configs import MarketingConfigs
 
 logger = logging.getLogger(__name__)
 

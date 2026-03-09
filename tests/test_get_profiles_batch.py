@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from typing import Generator, List
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from data_utils.db_factory import get_db_context
-from data_utils.settings import DatabaseSettings
+from core.db_factory import get_db_context
+from core.settings import DatabaseSettings
 from data_models.dbo_cdp import CdpProfile
 
 

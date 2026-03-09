@@ -1,6 +1,6 @@
 from data_models.dbo_tenant import get_default_tenant_id
 from data_workers.pg_profile_repository import PGProfileRepository
-from data_utils.settings import DatabaseSettings
+from core.settings import DatabaseSettings
 from data_utils.pg_client import get_pg_connection
 
 import logging

@@ -10,7 +10,7 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
-from main_configs import GEMINI_MODEL_ID, GEMINI_API_KEY, REDIS_URL
+from core.main_configs import GEMINI_MODEL_ID, GEMINI_API_KEY, REDIS_URL
 
 logger = logging.getLogger(__name__)
 

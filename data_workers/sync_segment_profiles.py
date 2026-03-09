@@ -7,10 +7,10 @@ from functools import partial
 
 # --- Imports (Assuming these exist in your project structure) ---
 from data_models.dbo_tenant import resolve_tenant_id, set_tenant_context
-from data_utils.db_factory import get_db_context 
-from data_utils.settings import DatabaseSettings
-from data_workers.arango_profile_repository import ArangoProfileRepository
-from data_workers.arango_to_pg_profile_sync_service import ArangoToPostgresSyncService
+from core.db_factory import get_db_context 
+from core.settings import DatabaseSettings
+from data_repositories.profile_repository import ArangoProfileRepository
+from data_services.cdp_sync_service import ArangoToPostgresSyncService
 from data_workers.pg_profile_repository import PGProfileRepository
 
 logger = logging.getLogger(__name__)
