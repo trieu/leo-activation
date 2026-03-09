@@ -93,37 +93,43 @@ def get_batch_scoring_data(settings: DatabaseSettings, start_time_iso: str, end_
         FOR event IN cdp_trackingevent
             FILTER event.createdAt >= @start_time
             FILTER event.createdAt < @end_time
-            
-            // Validate Instrument ID (Product ID)
-            FILTER HAS(event.eventData, 'instrument_id') 
-            FILTER event.eventData.instrument_id != null 
-            FILTER event.eventData.instrument_id != ""
 
-            FOR profile IN cdp_profile
-                // Link Event to Profile
-                FILTER profile.fingerprintId == event.fingerprintId
-                
-                // SEGMENT FILTER: This is our implicit Tenant Filter.
-                // Since the segment_uuid comes from Postgres (scoped to tenant), 
-                // only profiles belonging to this tenant's segment will be selected.
-                FILTER @segment_id IN profile.inSegments[*].id
-                
-                FOR metric IN cdp_eventmetric
-                    FILTER metric.eventName == event.metricName
-                    
-                    COLLECT 
-                        pid = profile._key, 
-                        ticker = event.eventData.instrument_id
-                    AGGREGATE 
-                        total_points = SUM(metric.score),
-                        last_seen = MAX(event.createdAt)
-                        
-                    RETURN {
-                        "profile_id": pid,
-                        "ticker": ticker,
-                        "points": total_points,
-                        "last_seen": last_seen
-                    }
+            // Build a unified ticker list from either field:
+            //  - instrument_id (string)  -> wrap in array
+            //  - instrument_id_list (array of strings) -> use directly
+            LET single = event.eventData.instrument_id
+            LET list   = event.eventData.instrument_id_list
+            LET tickers = (
+                single != null AND single != ""
+                ? [single]
+                : (IS_ARRAY(list) AND LENGTH(list) > 0 ? list : [])
+            )
+            FILTER LENGTH(tickers) > 0
+
+            // Unnest so each ticker becomes its own row
+            FOR ticker IN tickers
+                FILTER ticker != null AND ticker != ""
+
+                FOR profile IN cdp_profile
+                    FILTER profile.fingerprintId == event.fingerprintId
+                    FILTER @segment_id IN profile.inSegments[*].id
+
+                    FOR metric IN cdp_eventmetric
+                        FILTER metric.eventName == event.metricName
+
+                        COLLECT
+                            pid = profile._key,
+                            t = ticker
+                        AGGREGATE
+                            total_points = SUM(metric.score),
+                            last_seen = MAX(event.createdAt)
+
+                        RETURN {
+                            "profile_id": pid,
+                            "ticker": t,
+                            "points": total_points,
+                            "last_seen": last_seen
+                        }
         """
         
         bind_vars = {
@@ -159,7 +165,27 @@ def run_batch_scoring_job(settings: DatabaseSettings, start_time: str, end_time:
             logger.info("✅ Job finished: No relevant events found.")
             return
 
-        # C. Process Upserts
+        # C. Filter out orphaned profiles not present in cdp_profiles
+        arango_profile_ids = list({entry['profile_id'] for entry in batch_data})
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT profile_id FROM cdp_profiles WHERE profile_id = ANY(%s)",
+                (arango_profile_ids,)
+            )
+            valid_profile_ids = {
+                row['profile_id'] if isinstance(row, dict) else row[0]
+                for row in cur.fetchall()
+            }
+        skipped = len(arango_profile_ids) - len(valid_profile_ids)
+        if skipped:
+            logger.info(f"⏭️ Skipping {skipped} orphaned profile(s) not in cdp_profiles.")
+        batch_data = [e for e in batch_data if e['profile_id'] in valid_profile_ids]
+
+        if not batch_data:
+            logger.info("✅ Job finished: No valid profiles to process after filtering.")
+            return
+
+        # D. Process Upserts
         with conn.cursor() as cur:
             for entry in batch_data:
                 profile_id = entry['profile_id']
@@ -229,7 +255,7 @@ def run_batch_scoring_job(settings: DatabaseSettings, start_time: str, end_time:
                         NULL, NULL, 
                         NULL, NULL
                     )
-                    ON CONFLICT (tenant_id, profile_id, product_id, product_type, journey_map_id, journey_stage_id, recommendation_model) 
+                    ON CONFLICT (tenant_id, profile_id, journey_map_id, journey_stage_id, product_id, recommendation_model)
                     DO UPDATE SET 
                         raw_score = EXCLUDED.raw_score, 
                         interest_score = EXCLUDED.interest_score, 
@@ -238,7 +264,7 @@ def run_batch_scoring_job(settings: DatabaseSettings, start_time: str, end_time:
                 """
                 
                 cur.execute(upsert_sql, (
-                    tenant_uuid, profile_id, product_id,
+                    tenant_uuid, profile_id, product_id, DUMMY_PRODUCT_TYPE,
                     DUMMY_JOURNEY_MAP_ID, DUMMY_JOURNEY_STAGE_ID, DUMMY_REC_MODEL,
                     final_raw_score, final_interest_score, last_event_time
                 ))
