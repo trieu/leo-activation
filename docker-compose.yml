@@ -1,0 +1,21 @@
+services:
+  api:
+    build: .
+    image: leo-activation:latest
+    container_name: my_running_api
+    ports:
+      # SECURE BINDING: Only Nginx can talk to the API
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: my_redis_cache
+    restart: unless-stopped
+    # SECURITY FIX: No 'ports' section here! 
+    # Redis is now completely invisible to the outside world, 
+    # but the API container can still connect to it internally.
