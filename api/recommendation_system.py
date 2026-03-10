@@ -1,13 +1,16 @@
 import logging
+import json
 import os
 from unittest import result
 import psycopg
+import redis
 from typing import List, Dict, Any, Optional, Union
 from fastapi import APIRouter, HTTPException, Path, Query, Depends
 from pydantic import BaseModel, Field
 
 # --- IMPORTS ---
 from data_utils.settings import DatabaseSettings
+from main_configs import REDIS_URL, RECOMMENDATION_CACHE_TTL
 
 # Import Workers (The Logic Layer)
 # We handle import errors gracefully to prevent crashing if workers aren't ready
@@ -25,6 +28,39 @@ except ImportError as e:
 
 # --- LOGGING ---
 logger = logging.getLogger("LEO Recommendation API")
+
+# --- REDIS CACHE (module-level singleton, graceful fallback) ---
+_redis_client: Optional[redis.Redis] = None
+try:
+    if REDIS_URL:
+        _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        _redis_client.ping()
+        logger.info("Redis cache connected for recommendation endpoints.")
+    else:
+        logger.warning("REDIS_URL not set. Recommendation caching disabled.")
+except Exception as e:
+    logger.warning(f"Redis unavailable — recommendation caching disabled. {e}")
+    _redis_client = None
+
+
+def _cache_get(key: str) -> Optional[str]:
+    if not _redis_client:
+        return None
+    try:
+        return _redis_client.get(key)
+    except Exception as e:
+        logger.error(f"Redis read error: {e}")
+        return None
+
+
+def _cache_set(key: str, value: str) -> None:
+    if not _redis_client:
+        return
+    try:
+        _redis_client.setex(key, RECOMMENDATION_CACHE_TTL, value)
+    except Exception as e:
+        logger.error(f"Redis write error: {e}")
+
 
 # --- ROUTER SETUP ---
 router = APIRouter(
@@ -124,25 +160,31 @@ async def get_profile_affinity_endpoint(
     Useful for: Customer Support Dashboard or User Profile Page.
     """
     try:
-        # Resolve Tenant Context
         target_tenant = os.getenv("TARGET_TENANT", "master")
-        tenant_uuid, _ = resolve_ids(conn, target_tenant, "Active in last 3 months")
 
-        # Call Worker
+        # --- Cache read ---
+        cache_key = f"leo:rec:affinity:{target_tenant}:{lookup_key}"
+        cached = _cache_get(cache_key)
+        if cached:
+            return UserProfileInterestResponse.model_validate_json(cached)
+
+        # --- Cache miss: query DB ---
+        tenant_uuid, _ = resolve_ids(conn, target_tenant, "Active in last 3 months")
         data = get_profile_affinity(conn, tenant_uuid, lookup_key)
-        
+
         if not data:
-            # Return empty structure if not found
             return UserProfileInterestResponse(
-                profile_id=None, 
-                identities=[], 
-                raw_scores={}, 
-                interest_scores={}, 
-                next_likely_actions={}, 
+                profile_id=None,
+                identities=[],
+                raw_scores={},
+                interest_scores={},
+                next_likely_actions={},
                 segments=[]
             )
-            
-        return UserProfileInterestResponse(**data)
+
+        response = UserProfileInterestResponse(**data)
+        _cache_set(cache_key, response.model_dump_json())
+        return response
 
     except Exception as e:
         logger.error(f"❌ Profile Lookup Error for '{lookup_key}': {e}")
@@ -156,22 +198,29 @@ async def get_nba_endpoint(
     conn: psycopg.Connection = Depends(get_db)
 ):
     """
-    Calculates the single best action to take for a user based on 
+    Calculates the single best action to take for a user based on
     their highest interest score and segment persona.
     Useful for: Marketing Triggers (e.g., "Show this Banner").
     """
     try:
-        # Resolve Tenant Context
         target_tenant = os.getenv("TARGET_TENANT", "master")
-        tenant_uuid, _ = resolve_ids(conn, target_tenant, "Active in last 3 months")
 
-        # Call Worker (Logic Engine)
+        # --- Cache read ---
+        cache_key = f"leo:rec:nba:{target_tenant}:{user_id}"
+        cached = _cache_get(cache_key)
+        if cached:
+            return NextBestActionResponse.model_validate_json(cached)
+
+        # --- Cache miss: query DB + run pipeline ---
+        tenant_uuid, _ = resolve_ids(conn, target_tenant, "Active in last 3 months")
         result = get_next_best_action(conn, tenant_uuid, user_id)
 
-        return NextBestActionResponse(
+        response = NextBestActionResponse(
             profile_id=result["profile_id"],
             next_best_actions=result["next_best_actions"]
         )
+        _cache_set(cache_key, response.model_dump_json())
+        return response
 
     except Exception as e:
         logger.error(f"❌ NBA Error for '{user_id}': {e}")
