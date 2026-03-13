@@ -150,23 +150,21 @@ class ZaloOAChannel(NotificationChannel):
     # MESSAGING METHODS
     # ==========================================
 
-    def send_text_with_image(self, zalo_user_id: str, text_content: str, image_url: str) -> tuple[bool, int, str]:
+    def send_text_with_image(self, zalo_user_id: str, text_content: str, image_url: str, buttons: list = None) -> tuple[bool, int, str]:
         """
-        Sends a message containing both text and an image via the CS endpoint.
-        Requires the user to have interacted within the last 7 days.
+        Sends a message containing text, an image, and optional interactive buttons.
+        MUST use the 'media' template to avoid Zalo's -233 Error on the CS endpoint.
         """
         url = "https://openapi.zalo.me/v3.0/oa/message/cs"
         
         payload = {
-            "recipient": {
-                "user_id": zalo_user_id
-            },
+            "recipient": {"user_id": zalo_user_id},
             "message": {
-                "text": text_content,
+                "text": text_content, # The text sits outside the attachment in the 'media' type
                 "attachment": {
                     "type": "template",
                     "payload": {
-                        "template_type": "media",
+                        "template_type": "media", # <-- THIS IS THE CRITICAL FIX
                         "elements": [
                             {
                                 "media_type": "image",
@@ -178,72 +176,116 @@ class ZaloOAChannel(NotificationChannel):
             }
         }
         
+        # Safely inject buttons if they are provided
+        if buttons:
+            payload["message"]["attachment"]["payload"]["buttons"] = buttons
+            
+        return self._execute_api_post(url, payload)
+
+    def send_promotional_message(self, zalo_user_id: str, template_id: str, template_data: Dict[str, Any]) -> Tuple[bool, int, str]:
+        """
+        Sends a purely promotional message (ZBS Template) to a user.
+        This bypasses the 7-day interaction rule but consumes your OA's monthly promotional quota.
+        
+        Args:
+            zalo_user_id: The recipient's Zalo ID.
+            template_id: The approved ZBS Template ID (from ZCA).
+            template_data: Dictionary of variables matching your template design.
+            
+        Returns: Tuple of (Success Boolean, Error Code, Message ID or Error string)
+        """
+        url = "https://openapi.zalo.me/v3.0/oa/message/promotion"
+        
+        payload = {
+            "recipient": {"user_id": zalo_user_id},
+            "message": {
+                "template_id": template_id,
+                "template_data": template_data
+            }
+        }
+        
+        # Leverages your robust token-refreshing engine!
+        return self._execute_api_post(url, payload)
+
+
+    def send_simple_text(self, zalo_user_id: str, text_content: str) -> tuple[bool, int, str]:
+        """
+        Sends a standard, free text message via the CS endpoint.
+        Used primarily by the webhook to auto-reply to user interactions.
+        """
+        url = "https://openapi.zalo.me/v3.0/oa/message/cs"
+        
+        payload = {
+            "recipient": {"user_id": zalo_user_id},
+            "message": {"text": text_content}
+        }
+        
         return self._execute_api_post(url, payload)
         
-    # def send(self, segment_id: str, message: str = None, **kwargs):
-    #     """
-    #     Main Execution Flow (Test Mode)
-    #     """
-    #     logger.info(f"[Zalo] Starting TEST MODE send to segment: {segment_id}")
+    def send(self, segment_id: str, message: str = None, **kwargs):
+        """
+        Main Execution Flow (Test Mode)
+        """
+        logger.info(f"[Zalo] Starting TEST MODE send to segment: {segment_id}")
         
-    #     # 1. Fetch Recipients
-    #     recipients = self.get_segment_contacts(segment_id)
-    #     if not recipients:
-    #         return {"status": "warning", "message": f"No profiles found in '{segment_id}'"}
+        # 1. Fetch Recipients
+        recipients = self.get_segment_contacts(segment_id)
+        if not recipients:
+            return {"status": "warning", "message": f"No profiles found in '{segment_id}'"}
 
-    #     stats = {"sent": 0, "failed": 0, "invalid_phone": 0}
+        stats = {"sent": 0, "failed": 0, "invalid_phone": 0}
 
-    #     # 2. Loop & Send
-    #     for p in recipients:
-    #         phone = self._format_phone_for_zalo(p.get('phone'))
-    #         name = p.get('firstName', 'Customer')
+        # 2. Loop & Send
+        for p in recipients:
+            phone = self._format_phone_for_zalo(p.get('phone'))
+            name = p.get('firstName', 'Customer')
 
-    #         if not phone:
-    #             stats["invalid_phone"] += 1
-    #             continue
+            if not phone:
+                stats["invalid_phone"] += 1
+                continue
 
-    #         # Construct Payload
-    #         # NOTE: Ensure keys like 'customer_name' match your ZNS Template exactly!
-    #         # 1. Generate a random 6-digit OTP
-    #         generated_otp = str(random.randint(100000, 999999))
+            # Construct Payload
+            # NOTE: Ensure keys like 'customer_name' match your ZNS Template exactly!
+            # 1. Generate a random 6-digit OTP
+            generated_otp = str(random.randint(100000, 999999))
 
-    #         # 2. Construct Payload
-    #         payload = {
-    #             "phone": phone,
-    #             "template_id": self.template_id,
-    #             "template_data": {
-    #                 # Zalo requires the key to match "otp" exactly
-    #                 "otp": generated_otp,
-    #             },
-    #             "tracking_id": f"track_{int(time.time())}_{phone}"
-    #         }
+            # 2. Construct Payload
+            payload = {
+                "phone": phone,
+                "template_id": self.template_id,
+                "template_data": {
+                    # Zalo requires the key to match "otp" exactly
+                    "otp": generated_otp,
+                },
+                "tracking_id": f"track_{int(time.time())}_{phone}"
+            }
 
-    #         # 3. Attempt 1 Send
-    #         success, error_code, result_msg = self._execute_zns_call(payload)
+            # 3. Attempt 1 Send
+            success, error_code, result_msg = self._execute_zns_call(payload)
 
-    #         # 4. Auto-Refresh Logic
-    #         if not success and error_code == -124:
-    #             logger.warning(f"[Zalo] Token expired for {phone}. Refreshing and Retrying...")
-    #             if self._refresh_access_token():
-    #                 # Attempt 2 (Retry with new token)
-    #                 success, error_code, result_msg = self._execute_zns_call(payload)
-    #             else:
-    #                 logger.error("[Zalo] Token refresh failed. Aborting retry.")
+            # 4. Auto-Refresh Logic
+            if not success and error_code == -124:
+                logger.warning(f"[Zalo] Token expired for {phone}. Refreshing and Retrying...")
+                if self._refresh_access_token():
+                    # Attempt 2 (Retry with new token)
+                    success, error_code, result_msg = self._execute_zns_call(payload)
+                else:
+                    logger.error("[Zalo] Token refresh failed. Aborting retry.")
 
-    #         # 5. Handle Final Result
-    #         if success:
-    #             stats["sent"] += 1
-    #             # NOTE: In real mode, consider saving verified phones
-    #             # self._save_verified_phone(phone, name, result_msg)
-    #         else:
-    #             stats["failed"] += 1
-    #             logger.warning(f"[Zalo] Failed to send to {phone}. Error: {error_code} - {result_msg}")
+            # 5. Handle Final Result
+            if success:
+                stats["sent"] += 1
+                # NOTE: In real mode, consider saving verified phones
+                # self._save_verified_phone(phone, name, result_msg)
+            else:
+                stats["failed"] += 1
+                logger.warning(f"[Zalo] Failed to send to {phone}. Error: {error_code} - {result_msg}")
 
-    #     return {
-    #         "status": "success", 
-    #         "details": f"Run complete. Sent: {stats['sent']}, Failed: {stats['failed']}", 
-    #         "stats": stats
-    #     }
+        return {
+            "status": "success", 
+            "details": f"Run complete. Sent: {stats['sent']}, Failed: {stats['failed']}", 
+            "stats": stats
+        }
 
 
     # ==========================================
@@ -255,9 +297,9 @@ class ZaloOAChannel(NotificationChannel):
     ) -> Tuple[bool, int, str]:
         """Generic POST against any Zalo OA API endpoint.
 
-        Reuses the current ``access_token`` (with whitespace stripped) and
-        returns the same ``(success, error_code, message)`` triple as
-        ``_execute_zns_call``.
+        Reuses the current ``access_token`` (with whitespace stripped).
+        Automatically catches -216 (Expired Token), refreshes via DB, 
+        and retries the request seamlessly.
         """
         clean_token: str = self.access_token.strip()
         headers: Dict[str, str] = {
@@ -272,8 +314,36 @@ class ZaloOAChannel(NotificationChannel):
             error_code: int = data.get("error", -999)
             message: str = data.get("message", "Unknown")
 
+            # 🚨 THE SAFETY NET: Catch Expired Token
+            if error_code == -216:
+                logger.warning(f"[Zalo API] Caught -216 Expired Token. Triggering auto-refresh...")
+                
+                if self._refresh_access_token():
+                    # Refresh succeeded! Update headers with the NEW token
+                    headers["access_token"] = self.access_token.strip()
+                    logger.info("[Zalo API] Retrying original request with new token...")
+                    
+                    # Fire the exact same payload again
+                    retry_resp = requests.post(url, json=payload, headers=headers, timeout=15)
+                    retry_data = retry_resp.json()
+                    
+                    retry_error: int = retry_data.get("error", -999)
+                    retry_message: str = retry_data.get("message", "Unknown")
+                    
+                    if retry_error == 0:
+                        # Note: Zalo APIs sometimes use 'msg_id', sometimes 'message_id'
+                        data_block = retry_data.get("data", {})
+                        msg_id: str = data_block.get("message_id", data_block.get("msg_id", "unknown"))
+                        return True, 0, msg_id
+                    else:
+                        return False, retry_error, retry_message
+                else:
+                    return False, -216, "Token expired and auto-refresh failed."
+
+            # Normal Execution (Token was valid)
             if error_code == 0:
-                msg_id: str = data.get("data", {}).get("msg_id", "unknown")
+                data_block = data.get("data", {})
+                msg_id: str = data_block.get("message_id", data_block.get("msg_id", "unknown"))
                 return True, 0, msg_id
 
             return False, error_code, message
@@ -383,7 +453,7 @@ class ZaloOAChannel(NotificationChannel):
             logger.info("[Zalo] ✅ New tokens saved to Database successfully.")
         except Exception as e:
             logger.error(f"[Zalo] ❌ CRITICAL: Failed to save new tokens to DB! Next run will fail. Error: {e}")
-            
+
     
     # ==========================================
     # ZNS & PHONE NUMBER UTILITIES
