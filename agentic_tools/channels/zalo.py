@@ -33,19 +33,6 @@ def extract_zalo_user_id(media_channels: list) -> Optional[str]:
     return None
 
 
-def get_user_contact_from_cdp(segment_id: str) -> Optional[list]:
-    """
-    Placeholder function to fetch user contacts from CDP based on segment_id.
-    In real implementation, this should query the actual CDP system.
-    """
-    # For demonstration, return a static list
-    dummy_data = [
-        {"phone": "0912345678", "firstName": "Alice"},
-        {"phone": "0987654321", "firstName": "Bob"},
-        {"phone": "0123456789", "firstName": "Charlie"},
-    ]
-    return dummy_data
-
 class ZaloOAChannel(NotificationChannel):
     # Constants for DB Lookup
     CONNECTOR_NAME = "LEO Zalo Connector"
@@ -74,103 +61,95 @@ class ZaloOAChannel(NotificationChannel):
 
     def get_oa_followers(self, limit: int = 50) -> list:
         """
-        Fetches the list of encrypted Zalo user_ids who currently follow the OA.
-        Handles pagination automatically up to the specified limit.
+        Fetches the raw Zalo User IDs (UIDs) of people currently following your OA.
+        
+        Note: Zalo only returns the UID here. To get their name or avatar, 
+        you must pass these UIDs into `get_user_detail()`.
         """
         url = "https://openapi.zalo.me/v3.0/oa/user/getlist"
-        clean_token = self.access_token.strip()
-        headers = {
-            "access_token": clean_token,
-            "Content-Type": "application/json"
-        }
+        headers = {"access_token": self.access_token.strip(), "Content-Type": "application/json"}
 
         all_followers = []
         offset = 0
-        batch_size = 50 # Zalo's maximum allowed count per request
-
-        logger.info(f"[Zalo] Fetching up to {limit} followers...")
+        batch_size = 50 # Zalo's strict max per request
 
         while len(all_followers) < limit:
-            # Construct the query parameter
-            data_param = {
-                "offset": offset,
-                "count": batch_size,
-                "is_follower": "true" # Strictly filter by active followers
-            }
-            
-            # URL encode the JSON string as required by Zalo GET requests
+            data_param = {"offset": offset, "count": batch_size, "is_follower": "true"}
             encoded_data = urllib.parse.quote(json.dumps(data_param))
             request_url = f"{url}?data={encoded_data}"
 
             try:
                 resp = requests.get(request_url, headers=headers, timeout=15)
                 data = resp.json()
-                
                 error_code = data.get("error", -999)
                 
-                # Handle Token Expiration
+                # Handle Expired Token
                 if error_code in [-124, -216]:
-                    logger.warning(f"[Zalo] Token invalid/expired (Error {error_code}). Refreshing...")
                     if self._refresh_access_token():
-                        # CRITICAL: Inject the brand new token into the headers for the retry
                         headers["access_token"] = self.access_token.strip()
-                        continue # Retry the exact same offset
-                    else:
-                        logger.error("[Zalo] Refresh failed. You need to manually generate a new token.")
-                        break # Stop if refresh fails
-
+                        continue # Retry same offset with new token
+                    break
+                
                 if error_code != 0:
-                    logger.error(f"[Zalo] Failed to fetch followers. Error: {error_code} - {data.get('message')}")
+                    logger.error(f"[Zalo] Failed to fetch followers: {data.get('message')}")
                     break
 
-                # Parse the successful response
                 users = data.get("data", {}).get("users", [])
                 if not users:
-                    break # No more users to fetch
+                    break
 
                 all_followers.extend(users)
                 offset += batch_size
-                
-                # Be polite to Zalo's rate limits
-                time.sleep(0.5)
+                time.sleep(0.5) # Rate limiting protection
 
             except Exception as e:
-                logger.error(f"[Zalo] Network Error while fetching followers: {e}")
+                logger.error(f"[Zalo Network Error] {e}")
                 break
 
-        # Return exactly the limit requested
         return all_followers[:limit]
+    
 
     def get_user_detail(self, user_id: str) -> dict:
         """
-        Fetches detailed profile info (name, avatar, etc.) for a specific user_id.
+        Fetches the rich profile (Display Name, Avatar, and Shared Phone Number) 
+        for a specific Zalo User ID.
         """
         url = "https://openapi.zalo.me/v3.0/oa/user/detail"
-        clean_token = self.access_token.strip()
-        headers = {
-            "access_token": clean_token,
-            "Content-Type": "application/json"
-        }
+        headers = {"access_token": self.access_token.strip(), "Content-Type": "application/json"}
         
         data_param = {"user_id": user_id}
-        encoded_data = urllib.parse.quote(json.dumps(data_param))
-        request_url = f"{url}?data={encoded_data}"
+        request_url = f"{url}?data={urllib.parse.quote(json.dumps(data_param))}"
 
         try:
             resp = requests.get(request_url, headers=headers, timeout=10)
             data = resp.json()
-            
             if data.get("error") == 0:
-                # Zalo returns the profile inside the 'data' object
                 return data.get("data", {})
-            else:
-                logger.warning(f"[Zalo] Failed to fetch details for {user_id}: {data.get('message')}")
-                return {}
-                
+            return {}
         except Exception as e:
             logger.error(f"[Zalo] Network error fetching details for {user_id}: {e}")
             return {}
         
+    def check_user_quota(self, user_id: str) -> dict:
+        """
+        Diagnostic tool: Checks how many promotional messages you are still 
+        allowed to send to this specific user this month.
+        """
+        url = "https://openapi.zalo.me/v3.0/oa/quota/message"
+        payload = {"user_id": user_id}
+        headers = {"access_token": self.access_token.strip(), "Content-Type": "application/json"}
+        
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            return resp.json()
+        except Exception as e:
+            return {"error": -1, "message": str(e)}
+        
+        
+    # ==========================================
+    # MESSAGING METHODS
+    # ==========================================
+
     def send_text_with_image(self, zalo_user_id: str, text_content: str, image_url: str) -> tuple[bool, int, str]:
         """
         Sends a message containing both text and an image via the CS endpoint.
@@ -201,192 +180,75 @@ class ZaloOAChannel(NotificationChannel):
         
         return self._execute_api_post(url, payload)
         
-    def send(self, segment_id: str, message: str = None, **kwargs):
-        """
-        Main Execution Flow (Test Mode)
-        """
-        logger.info(f"[Zalo] Starting TEST MODE send to segment: {segment_id}")
+    # def send(self, segment_id: str, message: str = None, **kwargs):
+    #     """
+    #     Main Execution Flow (Test Mode)
+    #     """
+    #     logger.info(f"[Zalo] Starting TEST MODE send to segment: {segment_id}")
         
-        # 1. Fetch Recipients
-        recipients = get_user_contact_from_cdp(segment_id)
-        if not recipients:
-            return {"status": "warning", "message": f"No profiles found in '{segment_id}'"}
+    #     # 1. Fetch Recipients
+    #     recipients = self.get_segment_contacts(segment_id)
+    #     if not recipients:
+    #         return {"status": "warning", "message": f"No profiles found in '{segment_id}'"}
 
-        stats = {"sent": 0, "failed": 0, "invalid_phone": 0}
+    #     stats = {"sent": 0, "failed": 0, "invalid_phone": 0}
 
-        # 2. Loop & Send
-        for p in recipients:
-            phone = self._format_phone_for_zalo(p.get('phone'))
-            name = p.get('firstName', 'Customer')
+    #     # 2. Loop & Send
+    #     for p in recipients:
+    #         phone = self._format_phone_for_zalo(p.get('phone'))
+    #         name = p.get('firstName', 'Customer')
 
-            if not phone:
-                stats["invalid_phone"] += 1
-                continue
+    #         if not phone:
+    #             stats["invalid_phone"] += 1
+    #             continue
 
-            # Construct Payload
-            # NOTE: Ensure keys like 'customer_name' match your ZNS Template exactly!
-            # 1. Generate a random 6-digit OTP
-            generated_otp = str(random.randint(100000, 999999))
+    #         # Construct Payload
+    #         # NOTE: Ensure keys like 'customer_name' match your ZNS Template exactly!
+    #         # 1. Generate a random 6-digit OTP
+    #         generated_otp = str(random.randint(100000, 999999))
 
-            # 2. Construct Payload
-            payload = {
-                "phone": phone,
-                "template_id": self.template_id,
-                "template_data": {
-                    # Zalo requires the key to match "otp" exactly
-                    "otp": generated_otp,
-                },
-                "tracking_id": f"track_{int(time.time())}_{phone}"
-            }
+    #         # 2. Construct Payload
+    #         payload = {
+    #             "phone": phone,
+    #             "template_id": self.template_id,
+    #             "template_data": {
+    #                 # Zalo requires the key to match "otp" exactly
+    #                 "otp": generated_otp,
+    #             },
+    #             "tracking_id": f"track_{int(time.time())}_{phone}"
+    #         }
 
-            # 3. Attempt 1 Send
-            success, error_code, result_msg = self._execute_zns_call(payload)
+    #         # 3. Attempt 1 Send
+    #         success, error_code, result_msg = self._execute_zns_call(payload)
 
-            # 4. Auto-Refresh Logic
-            if not success and error_code == -124:
-                logger.warning(f"[Zalo] Token expired for {phone}. Refreshing and Retrying...")
-                if self._refresh_access_token():
-                    # Attempt 2 (Retry with new token)
-                    success, error_code, result_msg = self._execute_zns_call(payload)
-                else:
-                    logger.error("[Zalo] Token refresh failed. Aborting retry.")
+    #         # 4. Auto-Refresh Logic
+    #         if not success and error_code == -124:
+    #             logger.warning(f"[Zalo] Token expired for {phone}. Refreshing and Retrying...")
+    #             if self._refresh_access_token():
+    #                 # Attempt 2 (Retry with new token)
+    #                 success, error_code, result_msg = self._execute_zns_call(payload)
+    #             else:
+    #                 logger.error("[Zalo] Token refresh failed. Aborting retry.")
 
-            # 5. Handle Final Result
-            if success:
-                stats["sent"] += 1
-                # NOTE: In real mode, consider saving verified phones
-                # self._save_verified_phone(phone, name, result_msg)
-            else:
-                stats["failed"] += 1
-                logger.warning(f"[Zalo] Failed to send to {phone}. Error: {error_code} - {result_msg}")
+    #         # 5. Handle Final Result
+    #         if success:
+    #             stats["sent"] += 1
+    #             # NOTE: In real mode, consider saving verified phones
+    #             # self._save_verified_phone(phone, name, result_msg)
+    #         else:
+    #             stats["failed"] += 1
+    #             logger.warning(f"[Zalo] Failed to send to {phone}. Error: {error_code} - {result_msg}")
 
-        return {
-            "status": "success", 
-            "details": f"Run complete. Sent: {stats['sent']}, Failed: {stats['failed']}", 
-            "stats": stats
-        }
+    #     return {
+    #         "status": "success", 
+    #         "details": f"Run complete. Sent: {stats['sent']}, Failed: {stats['failed']}", 
+    #         "stats": stats
+    #     }
 
-    
-    # --------------------------------------------------------
-    # Promotional Messages (Tin Truyền Thông)
-    # --------------------------------------------------------
 
-    def send_promotion(self, zalo_user_id: str, template_data: Dict[str, Any]) -> Tuple[bool, int, str]:
-        url = "https://openapi.zalo.me/v3.0/oa/message/promotion"
-        
-        payload = {
-            "recipient": {"user_id": zalo_user_id},
-            "message": {
-                "attachment": {
-                    "type": "template",
-                    "payload": {
-                        "template_type": "promotion",
-                        "elements": [
-                            {
-                                "type": "header",
-                                "content": template_data.get("title")[:100] # Zalo has strict length limits
-                            },
-                            {
-                                "type": "text",
-                                "content": template_data.get("subtitle")[:500]
-                            }
-                        ],
-                        "buttons": [
-                            {
-                                "title": "Xem ngay",
-                                "type": "oa.open.url",
-                                "payload": {"url": template_data.get("url")}
-                            }
-                        ]
-                    }
-                }
-            }
-        }
-        # Note: I removed the 'banner' element. Sometimes a broken Image URL triggers -233.
-        # If this works, add the banner back slowly.
-        return self._execute_api_post(url, payload)
-
-    def send_article_promotion(self, zalo_user_id: str, article_id: str) -> Tuple[bool, int, str]:
-        """
-        Sends a rich Article (like the CellphoneS one) to a user.
-        The article must already be created/published in your OA Manager.
-        """
-        url = "https://openapi.zalo.me/v3.0/oa/message/promotion"
-        
-        payload = {
-            "recipient": {"user_id": zalo_user_id},
-            "message": {
-                "attachment": {
-                    "type": "template",
-                    "payload": {
-                        "template_type": "media", # Media type is used for Articles
-                        "elements": [{
-                            "media_type": "article",
-                            "attachment_id": article_id
-                        }]
-                    }
-                }
-            }
-        }
-        return self._execute_api_post(url, payload)
-
-    def send_article_media(self, zalo_user_id: str, article_id: str):
-        """
-        Sends a rich Article (media type) to a specific user.
-        """
-        url = "https://openapi.zalo.me/v3.0/oa/message/cs"
-        
-        payload = {
-            "recipient": {"user_id": zalo_user_id},
-            "message": {
-                "attachment": {
-                    "type": "template",
-                    "payload": {
-                        "template_type": "media",
-                        "elements": [{
-                            "media_type": "article",
-                            "attachment_id": article_id # Your Article ID from Phase 2
-                        }]
-                    }
-                }
-            }
-        }
-        return self._execute_api_post(url, payload)
-    
-    def send_article_link(self, zalo_user_id: str, article_url: str):
-            """
-            Sends an Article as a rich-preview link using the CS endpoint.
-            Note: Because it uses the CS endpoint, the user must have interacted within 7 days.
-            """
-            url = "https://openapi.zalo.me/v3.0/oa/message/cs"
-            
-            payload = {
-                "recipient": {"user_id": zalo_user_id},
-                "message": {
-                    # Zalo will automatically convert this link into a beautiful 
-                    # visual card in the user's chat window!
-                    "text": f"🚀 Danh mục cổ phiếu tiềm năng dành riêng cho bạn:\n{article_url}"
-                }
-            }
-            return self._execute_api_post(url, payload)
-            
-    def check_user_quota(self, zalo_user_id: str):
-        url = "https://openapi.zalo.me/v3.0/oa/quota/message"
-        payload = {"user_id": zalo_user_id}
-        
-        clean_token = self.access_token.strip()
-        headers = {"access_token": clean_token, "Content-Type": "application/json"}
-        
-        resp = requests.post(url, json=payload, headers=headers)
-        data = resp.json()
-        
-        if data.get("error") == 0:
-            quota = data.get("data", {}).get("promotion", {})
-            print(f"📊 Promotion Quota for User {zalo_user_id}:")
-            print(f"   Daily: {quota.get('daily_remain')}/{quota.get('daily_total')}")
-            print(f"   Monthly: {quota.get('monthly_remain')}/{quota.get('monthly_total')}")
-        else:
-            print(f"❌ Could not fetch quota: {data.get('message')} (Error {data.get('error')})")
+    # ==========================================
+    # INTERNAL UTILITIES & TOKEN MANAGEMENT
+    # ==========================================
 
     def _execute_api_post(
         self, url: str, payload: Dict[str, Any]
@@ -419,56 +281,8 @@ class ZaloOAChannel(NotificationChannel):
         except Exception as e:
             logger.error(f"[Zalo Network Error] {e}")
             return False, -999, str(e)
+        
 
-    def _execute_zns_call(self, payload: Dict) -> Tuple[bool, int, str]:
-        """
-        Executes API call with VERBOSE DEBUGGING.
-        """
-        # 1. Sanitize Token (Strip whitespace which causes many errors)
-        clean_token = self.access_token.strip()
-        
-        headers = {
-            "access_token": clean_token,  # ZNS uses this specific header key
-            "Content-Type": "application/json"
-        }
-        
-        # 2. DEBUG LOGS: Print what we are actually sending
-        # Mask the token so we can verify it without leaking it entirely
-        masked_token = f"{clean_token[:10]}...{clean_token[-10:]}" if len(clean_token) > 20 else "INVALID_SHORT_TOKEN"
-        
-        logger.info("------------- ZALO DEBUG REQUEST -------------")
-        logger.info(f"URL: {self.zns_url}")
-        logger.info(f"Token Used: {masked_token}") 
-        logger.info(f"Token Length: {len(clean_token)} chars")
-        logger.info(f"Payload: {payload}")
-        logger.info("----------------------------------------------")
-
-        try:
-            resp = requests.post(self.zns_url, json=payload, headers=headers, timeout=15)
-            data = resp.json()
-            
-            # 3. DEBUG LOGS: Print exactly what Zalo replied
-            logger.info("------------- ZALO DEBUG RESPONSE ------------")
-            logger.info(f"Status Code: {resp.status_code}")
-            logger.info(f"Raw Body: {resp.text}")
-            logger.info("----------------------------------------------")
-            
-            error_code = data.get("error", -999)
-            message = data.get("message", "Unknown")
-            
-            # Case 1: Success
-            if error_code == 0:
-                msg_id = data.get("data", {}).get("msg_id", "unknown")
-                return True, 0, msg_id
-
-            # Case 2: Token Expired (-124) or Invalid (-14014 sometimes)
-            return False, error_code, message
-
-        except Exception as e:
-            logger.error(f"[Zalo Network Error] {e}")
-            return False, -999, str(e)
-        
-        
     def _refresh_access_token(self) -> bool:
         """
         1. Reads latest Refresh Token from DB.
@@ -569,33 +383,37 @@ class ZaloOAChannel(NotificationChannel):
             logger.info("[Zalo] ✅ New tokens saved to Database successfully.")
         except Exception as e:
             logger.error(f"[Zalo] ❌ CRITICAL: Failed to save new tokens to DB! Next run will fail. Error: {e}")
-
+            
+    
+    # ==========================================
+    # ZNS & PHONE NUMBER UTILITIES
+    # ==========================================
 
     def _format_phone_for_zalo(self, phone: str) -> Optional[str]:
         """
-        Converts 09xx -> 849xx. Returns None if invalid.
+        Formats a standard Vietnamese phone number (09xx) to Zalo's required (849xx) format.
+        Strips all non-numeric characters.
         """
         if not phone:
             return None
         
-        # Remove non-digits
-        clean_phone = re.sub(r'\D', '', phone)
+        # Remove anything that isn't a digit (spaces, dashes, + signs)
+        clean_phone = ''.join(filter(str.isdigit, phone))
         
-        # Handle 84 prefix
         if clean_phone.startswith('84'):
             return clean_phone
         if clean_phone.startswith('0'):
             return '84' + clean_phone[1:]
             
         return clean_phone
-    
-    
+
     def _save_verified_phone(self, phone: str, name: str, msg_id: str):
         """
-        Saves successfully reached numbers to 'cdp_verified_phone'.
-        Uses UPSERT to avoid duplicates.
+        Upserts successfully reached phone numbers to the 'cdp_verified_phone' collection.
+        This allows the CDP to know which phone numbers are active on Zalo.
         """
-        if not self.db: return
+        if not self.db: 
+            return
 
         aql_upsert = """
         UPSERT { phone: @phone } 
@@ -619,9 +437,32 @@ class ZaloOAChannel(NotificationChannel):
         try:
             self.db.aql.execute(aql_upsert, bind_vars={
                 'phone': phone, 
-                'name': name,
+                'name': name or "Unknown",
                 'msg_id': msg_id
             })
-            # logger.info(f"[Zalo] Verified phone saved: {phone}")
+            # logger.info(f"[CDP] Verified Zalo phone saved: {phone}")
         except Exception as e:
-            logger.error(f"[Zalo] Failed to save verified phone {phone}: {e}")
+            logger.error(f"[CDP] Failed to save verified phone {phone}: {e}")
+
+    def get_segment_contacts(self, segment_id: str) -> list:
+        """
+        Queries ArangoDB to fetch the phone numbers and names of users in a specific segment.
+        Replaces the old dummy 'get_user_contact_from_cdp' function.
+        """
+        if not self.db:
+            logger.warning("[CDP] No DB connection. Returning empty segment.")
+            return []
+            
+        try:
+            # Note: Update this AQL to match your actual CDP schema!
+            aql = """
+            FOR user IN cdp_profiles
+                FILTER @segment_id IN user.segments
+                FILTER user.phone != null
+                RETURN { phone: user.phone, firstName: user.firstName }
+            """
+            cursor = self.db.aql.execute(aql, bind_vars={'segment_id': segment_id})
+            return list(cursor)
+        except Exception as e:
+            logger.error(f"[CDP DB Error] Failed to fetch segment {segment_id}: {e}")
+            return []
