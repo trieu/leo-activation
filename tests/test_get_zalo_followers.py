@@ -13,7 +13,7 @@ from agentic_tools.channels.zalo import ZaloOAChannel
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 def get_arango_db():
-    host = os.getenv("ARANGO_URL", "http://localhost:8529")
+    host = os.getenv("ARANGO_HOST", "http://localhost:8529")
     db_name = os.getenv("ARANGO_DB", "your_actual_db_name")
     username = os.getenv("ARANGO_USER", "root")
     password = os.getenv("ARANGO_PASSWORD", "")

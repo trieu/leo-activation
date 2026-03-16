@@ -35,7 +35,7 @@ def extract_zalo_user_id(media_channels: list) -> Optional[str]:
 
 class ZaloOAChannel(NotificationChannel):
     # Constants for DB Lookup
-    CONNECTOR_NAME = "LEO Zalo Connector"
+    CONNECTOR_KEY = "leo_zalo_connector"
     COLLECTION_NAME = "cdp_dataconnector"
 
     def __init__(self, override_token: str = None, db_client=None):
@@ -406,21 +406,14 @@ class ZaloOAChannel(NotificationChannel):
         if not self.db: return
 
         try:
-            aql = f"""
-            FOR d IN {self.COLLECTION_NAME}
-                FILTER d.name == @name
-                RETURN d.configs
-            """
-            cursor = self.db.aql.execute(aql, bind_vars={'name': self.CONNECTOR_NAME})
-            configs = list(cursor)
-            
-            if configs and len(configs) > 0:
-                cfg = configs[0]
+            doc = self.db.collection(self.COLLECTION_NAME).get(self.CONNECTOR_KEY)
+            if doc:
+                cfg = doc.get("configs", {})
                 self.access_token = cfg.get("zalo_oa_token", self.access_token)
                 self.refresh_token = cfg.get("zalo_refresh_token", self.refresh_token)
                 logger.info("[Zalo] Successfully loaded tokens from DB.")
             else:
-                logger.warning(f"[Zalo] No connector found with name '{self.CONNECTOR_NAME}'. Using static configs.")
+                logger.warning(f"[Zalo] No connector found with _key='{self.CONNECTOR_KEY}'. Using static configs.")
         except Exception as e:
             logger.error(f"[Zalo] Failed to load tokens from DB: {e}")
 
@@ -433,23 +426,16 @@ class ZaloOAChannel(NotificationChannel):
         if not self.db: return
 
         try:
-            # We use MERGE to update only the specific fields inside 'configs' object
-            aql = f"""
-            FOR d IN {self.COLLECTION_NAME}
-                FILTER d.name == @name
-                UPDATE d WITH {{
-                    configs: MERGE(d.configs, {{
-                        zalo_oa_token: @at,
-                        zalo_refresh_token: @rt
-                    }}),
-                    updatedAt: DATE_ISO8601(DATE_NOW())
-                }} IN {self.COLLECTION_NAME}
-            """
-            self.db.aql.execute(aql, bind_vars={
-                'name': self.CONNECTOR_NAME,
-                'at': new_access_token,
-                'rt': new_refresh_token
-            })
+            collection = self.db.collection(self.COLLECTION_NAME)
+            doc = collection.get(self.CONNECTOR_KEY)
+            if not doc:
+                logger.error(f"[Zalo] ❌ CRITICAL: No document with _key='{self.CONNECTOR_KEY}'. Tokens were NOT saved!")
+                return
+
+            configs = doc.get("configs", {})
+            configs["zalo_oa_token"] = new_access_token
+            configs["zalo_refresh_token"] = new_refresh_token
+            collection.update({"_key": self.CONNECTOR_KEY, "configs": configs, "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
             logger.info("[Zalo] ✅ New tokens saved to Database successfully.")
         except Exception as e:
             logger.error(f"[Zalo] ❌ CRITICAL: Failed to save new tokens to DB! Next run will fail. Error: {e}")

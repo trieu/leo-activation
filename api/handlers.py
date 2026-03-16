@@ -28,6 +28,7 @@ from data_workers.sync_segment_profiles import run_synch_profiles
 from main_configs import DATA_SYNC_API_KEY
 
 from api.recommendation_system import router as rec_router
+from fastapi.responses import FileResponse
 
 # --- DB UTILS ---
 # We need these for the /interested endpoint
@@ -194,5 +195,18 @@ def create_api_router(agent_router: AgentRouter) -> APIRouter:
         zalo = ZaloOAChannel()
         res = zalo.send(request.segment_name, request.message, **request.kwargs)
         return {"status": "completed", "channel_response": res}
+    
+    # ==========================================
+    # 🛑 ZALO DOMAIN VERIFICATION HACK
+    # Replace the route and the return string below 
+    # with the EXACT filename and code Zalo gave you!
+    # ==========================================
+    # @router.get("/zalo_verifierRuMR1OMoCovmZODmYxaHH7Mfe4wPtt4OE3ao.html")
+    # async def verify_zalo_domain():
+    #     # This is the secret string Zalo expects to see inside the file!
+    #     # (If you opened the file they gave you and the text inside is different, replace it here)
+    #     return FileResponse("zalo_verifierRuMR1OMoCovmZODmYxaHH7Mfe4wPtt4OE3ao.html")
         
     return router
+
+
