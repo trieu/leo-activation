@@ -35,8 +35,8 @@ def extract_zalo_user_id(media_channels: list) -> Optional[str]:
 
 class ZaloOAChannel(NotificationChannel):
     # Constants for DB Lookup
-    CONNECTOR_KEY = "leo_zalo_connector"
-    COLLECTION_NAME = "cdp_dataconnector"
+    CONNECTOR_KEY = "leo-zalo-connector"
+    COLLECTION_NAME = "cdp_agent"
 
     def __init__(self, override_token: str = None, db_client=None):
         # Assign the passed DB client directly
@@ -357,7 +357,7 @@ class ZaloOAChannel(NotificationChannel):
 
     def _load_tokens_from_db(self):
         """
-        Fetches the latest tokens from 'cdp_dataconnector' collection.
+        Fetches the latest tokens from 'cdp_agent' collection.
         """
         if not self.db:
             logger.warning("[Zalo Load] No DB client. Skipping DB token load.")
@@ -388,7 +388,7 @@ class ZaloOAChannel(NotificationChannel):
 
     def _save_tokens_to_db(self, new_access_token: str, new_refresh_token: str):
         """
-        Persists the NEW tokens to 'cdp_dataconnector'.
+        Persists the NEW tokens to 'cdp_agent'.
         CRITICAL: Zalo Refresh Tokens are single-use. We must save the new one.
         """
         if not self.db:

@@ -5,12 +5,19 @@ from unittest import result
 import psycopg
 import redis
 from typing import List, Dict, Any, Optional, Union
-from fastapi import APIRouter, HTTPException, Path, Query, Depends
+from fastapi import APIRouter, HTTPException, Path, Query, Depends, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
+
+
+
 
 # --- IMPORTS ---
 from data_utils.settings import DatabaseSettings
 from main_configs import REDIS_URL, RECOMMENDATION_CACHE_TTL
+
+from agentic_tools.channels.zalo import ZaloOAChannel
+# from agentic_tools.channels.zalo import send_simple_text
 
 # Import Workers (The Logic Layer)
 # We handle import errors gracefully to prevent crashing if workers aren't ready
@@ -41,6 +48,10 @@ try:
 except Exception as e:
     logger.warning(f"Redis unavailable — recommendation caching disabled. {e}")
     _redis_client = None
+
+def get_arango_db():
+    settings = DatabaseSettings()
+    return settings.get_arango_db()
 
 
 def _cache_get(key: str) -> Optional[str]:
@@ -252,3 +263,46 @@ async def get_nla_endpoint(
     except Exception as e:
         logger.error(f"❌ NLA Error for '{user_id}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+# FIX 1: The path should just be "/webhook/zalo"
+@router.post("/webhook/zalo")
+async def handle_zalo_webhook(request: Request):
+    """
+    Listens for events from the Zalo Official Account.
+    """
+    try:
+        payload = await request.json()
+        event_name = payload.get("event_name")
+        logger.info(f"[Zalo Webhook] Received event: {event_name}")
+
+        if event_name != "user_send_text":
+            return {"error": 0, "message": "Success"}
+
+        if event_name == "user_send_text":
+            sender_id = payload.get("sender", {}).get("id")
+            message_text = payload.get("message", {}).get("text", "")
+            
+            # The Webhook catches the secret code!
+            if message_text == "#GET_WEBSITE_LINK":
+                print(f"🎉 BOOM! User {sender_id} just reset their 7-day timer!")
+                
+                # FIX 2: Make sure your channel has the DB client so it can refresh tokens!
+                db = get_arango_db() 
+                channel = ZaloOAChannel(db_client=db)
+                
+                # The Webhook delivers the actual URL
+                reply_text = (
+                    "Cảm ơn bạn đã quan tâm! 🎁\n\n"
+                    "👉 Truy cập ngay website để nhận đặc quyền của bạn:\n"
+                    "https://trading-uat.1invest.vn/priceboard"
+                )
+                
+                channel.send_simple_text(sender_id, reply_text)
+                
+        return {"error": 0, "message": "Success"}
+
+    except Exception as e:
+        print(f"Webhook Error: {e}")
+        return {"error": -1, "message": "Internal Server Error"}
