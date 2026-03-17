@@ -10,7 +10,8 @@ WORKDIR /app
 
 # Copy requirements and install them securely
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 # Copy all your actual Python code
 COPY . .

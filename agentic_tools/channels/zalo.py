@@ -9,7 +9,7 @@ import urllib.parse
 import json
 
 from agentic_tools.channels.activation import NotificationChannel
-
+from agentic_tools.channels.templates.zalo.models import ZaloMessageTemplate
 
 from main_configs import MarketingConfigs
 
@@ -150,36 +150,41 @@ class ZaloOAChannel(NotificationChannel):
     # MESSAGING METHODS
     # ==========================================
 
-    def send_text_with_image(self, zalo_user_id: str, text_content: str, image_url: str, buttons: list = None) -> tuple[bool, int, str]:
+    def send_text_with_image(
+        self,
+        zalo_user_id: str,
+        template: ZaloMessageTemplate,
+        text_override: Optional[str] = None,
+        image_override: Optional[str] = None,
+    ) -> Tuple[bool, int, str]:
         """
-        Sends a message containing text, an image, and optional interactive buttons.
-        MUST use the 'media' template to avoid Zalo's -233 Error on the CS endpoint.
+        Sends a template-driven message (text + image + optional buttons) via the CS endpoint.
+        Pass text_override or image_override to personalise a template at send time.
+        MUST use the 'media' template_type to avoid Zalo's -233 error.
         """
         url = "https://openapi.zalo.me/v3.0/oa/message/cs"
-        
+        text = text_override or template.text
+        image = image_override or template.image_url
+
         payload = {
             "recipient": {"user_id": zalo_user_id},
             "message": {
-                "text": text_content, # The text sits outside the attachment in the 'media' type
+                "text": text,
                 "attachment": {
                     "type": "template",
                     "payload": {
-                        "template_type": "media", # <-- THIS IS THE CRITICAL FIX
-                        "elements": [
-                            {
-                                "media_type": "image",
-                                "url": image_url
-                            }
-                        ]
-                    }
-                }
-            }
+                        "template_type": "media",
+                        "elements": [{"media_type": "image", "url": image}],
+                    },
+                },
+            },
         }
-        
-        # Safely inject buttons if they are provided
-        if buttons:
-            payload["message"]["attachment"]["payload"]["buttons"] = buttons
-            
+
+        if template.buttons:
+            payload["message"]["attachment"]["payload"]["buttons"] = [
+                b.model_dump() for b in template.buttons
+            ]
+
         return self._execute_api_post(url, payload)
 
     def send_promotional_message(self, zalo_user_id: str, template_id: str, template_data: Dict[str, Any]) -> Tuple[bool, int, str]:
@@ -222,70 +227,8 @@ class ZaloOAChannel(NotificationChannel):
         
         return self._execute_api_post(url, payload)
         
-    def send(self, segment_id: str, message: str = None, **kwargs):
-        """
-        Main Execution Flow (Test Mode)
-        """
-        logger.info(f"[Zalo] Starting TEST MODE send to segment: {segment_id}")
-        
-        # 1. Fetch Recipients
-        recipients = self.get_segment_contacts(segment_id)
-        if not recipients:
-            return {"status": "warning", "message": f"No profiles found in '{segment_id}'"}
-
-        stats = {"sent": 0, "failed": 0, "invalid_phone": 0}
-
-        # 2. Loop & Send
-        for p in recipients:
-            phone = self._format_phone_for_zalo(p.get('phone'))
-            name = p.get('firstName', 'Customer')
-
-            if not phone:
-                stats["invalid_phone"] += 1
-                continue
-
-            # Construct Payload
-            # NOTE: Ensure keys like 'customer_name' match your ZNS Template exactly!
-            # 1. Generate a random 6-digit OTP
-            generated_otp = str(random.randint(100000, 999999))
-
-            # 2. Construct Payload
-            payload = {
-                "phone": phone,
-                "template_id": self.template_id,
-                "template_data": {
-                    # Zalo requires the key to match "otp" exactly
-                    "otp": generated_otp,
-                },
-                "tracking_id": f"track_{int(time.time())}_{phone}"
-            }
-
-            # 3. Attempt 1 Send
-            success, error_code, result_msg = self._execute_zns_call(payload)
-
-            # 4. Auto-Refresh Logic
-            if not success and error_code == -124:
-                logger.warning(f"[Zalo] Token expired for {phone}. Refreshing and Retrying...")
-                if self._refresh_access_token():
-                    # Attempt 2 (Retry with new token)
-                    success, error_code, result_msg = self._execute_zns_call(payload)
-                else:
-                    logger.error("[Zalo] Token refresh failed. Aborting retry.")
-
-            # 5. Handle Final Result
-            if success:
-                stats["sent"] += 1
-                # NOTE: In real mode, consider saving verified phones
-                # self._save_verified_phone(phone, name, result_msg)
-            else:
-                stats["failed"] += 1
-                logger.warning(f"[Zalo] Failed to send to {phone}. Error: {error_code} - {result_msg}")
-
-        return {
-            "status": "success", 
-            "details": f"Run complete. Sent: {stats['sent']}, Failed: {stats['failed']}", 
-            "stats": stats
-        }
+    def send(self, recipient_segment: str, message: str, **kwargs) -> Dict[str, Any]:
+        raise NotImplementedError("Use send_text_with_image() for OA messaging.")
 
 
     # ==========================================
@@ -314,9 +257,10 @@ class ZaloOAChannel(NotificationChannel):
             error_code: int = data.get("error", -999)
             message: str = data.get("message", "Unknown")
 
-            # 🚨 THE SAFETY NET: Catch Expired Token
-            if error_code == -216:
-                logger.warning(f"[Zalo API] Caught -216 Expired Token. Triggering auto-refresh...")
+            # 🚨 THE SAFETY NET: Catch Expired or Invalid Token
+            # -216: token expired, -124: token invalid/wrong
+            if error_code in (-216, -124):
+                logger.warning(f"[Zalo API] Caught {error_code} Invalid/Expired Token. Triggering auto-refresh...")
                 
                 if self._refresh_access_token():
                     # Refresh succeeded! Update headers with the NEW token
@@ -359,16 +303,24 @@ class ZaloOAChannel(NotificationChannel):
         2. Calls Zalo OAuth.
         3. Saves new tokens to DB.
         """
-        logger.info("[Zalo] Access Token invalid/expired. Preparing to refresh...")
-        
+        logger.info("[Zalo Refresh] === START TOKEN REFRESH ===")
+
         # 1. CRITICAL: Fetch the latest Refresh Token from DB right now
-        # This prevents using a stale token if another process updated it.
+        logger.debug("[Zalo Refresh] Step 1: Loading latest tokens from DB...")
         self._load_tokens_from_db()
-        
+
         if not self.refresh_token:
-            logger.error("[Zalo] No Refresh Token available (DB & Config empty). Cannot refresh.")
+            logger.error("[Zalo Refresh] ABORT: No Refresh Token available (DB & Config empty).")
             return False
 
+        logger.info(
+            f"[Zalo Refresh] Step 2: Calling OAuth endpoint={self.oauth_url}, "
+            f"app_id={self.app_id}, "
+            f"secret_key={'...'+self.secret_key[-6:] if self.secret_key else 'MISSING'}, "
+            f"refresh_token_length={len(self.refresh_token)}, "
+            f"refresh_token=...{self.refresh_token[-8:]}, "
+            f"refresh_token_first8={self.refresh_token[:8]}..."
+        )
         headers = {"secret_key": self.secret_key}
         payload = {
             "refresh_token": self.refresh_token,
@@ -379,23 +331,27 @@ class ZaloOAChannel(NotificationChannel):
         try:
             resp = requests.post(self.oauth_url, headers=headers, data=payload, timeout=15)
             data = resp.json()
+            logger.info(f"[Zalo Refresh] OAuth response status={resp.status_code}, body={data}")
 
             if "access_token" in data:
                 new_at = data["access_token"]
                 new_rt = data["refresh_token"]
-                
+                logger.info(f"[Zalo Refresh] Step 3: OAuth SUCCESS. new_access_token=...{new_at[-8:]}, new_refresh_token=...{new_rt[-8:]}")
+
                 # Update Memory
                 self.access_token = new_at
-                self.refresh_token = new_rt 
-                
+                self.refresh_token = new_rt
+
                 # Update Database
+                logger.debug("[Zalo Refresh] Step 4: Saving new tokens to DB...")
                 self._save_tokens_to_db(new_at, new_rt)
+                logger.info("[Zalo Refresh] === REFRESH COMPLETE (SUCCESS) ===")
                 return True
             else:
-                logger.error(f"[Zalo] Refresh Failed. Response: {data}")
+                logger.error(f"[Zalo Refresh] OAuth FAILED. error={data.get('error')}, reason={data.get('error_reason')}, description={data.get('error_description')}, full_response={data}")
                 return False
         except Exception as e:
-            logger.error(f"[Zalo] Refresh Exception: {e}")
+            logger.error(f"[Zalo Refresh] EXCEPTION during OAuth call: {type(e).__name__}: {e}")
             return False
 
 
@@ -403,19 +359,31 @@ class ZaloOAChannel(NotificationChannel):
         """
         Fetches the latest tokens from 'cdp_dataconnector' collection.
         """
-        if not self.db: return
+        if not self.db:
+            logger.warning("[Zalo Load] No DB client. Skipping DB token load.")
+            return
 
+        logger.debug(f"[Zalo Load] Fetching _key='{self.CONNECTOR_KEY}' from '{self.COLLECTION_NAME}'...")
         try:
             doc = self.db.collection(self.COLLECTION_NAME).get(self.CONNECTOR_KEY)
             if doc:
                 cfg = doc.get("configs", {})
-                self.access_token = cfg.get("zalo_oa_token", self.access_token)
-                self.refresh_token = cfg.get("zalo_refresh_token", self.refresh_token)
-                logger.info("[Zalo] Successfully loaded tokens from DB.")
+                logger.info(f"[Zalo Load] DB configs keys: {list(cfg.keys())}")
+                loaded_at = cfg.get("zalo_oa_token")
+                loaded_rt = cfg.get("zalo_refresh_token")
+                logger.info(
+                    f"[Zalo Load] Tokens loaded from DB. "
+                    f"access_token={'...'+loaded_at[-8:] if loaded_at else 'MISSING'}, "
+                    f"refresh_token={'...'+loaded_rt[-8:] if loaded_rt else 'MISSING'}, "
+                    f"refresh_token_length={len(loaded_rt) if loaded_rt else 0}, "
+                    f"refresh_token_type={type(loaded_rt).__name__}"
+                )
+                self.access_token = loaded_at or self.access_token
+                self.refresh_token = loaded_rt or self.refresh_token
             else:
-                logger.warning(f"[Zalo] No connector found with _key='{self.CONNECTOR_KEY}'. Using static configs.")
+                logger.warning(f"[Zalo Load] No document found with _key='{self.CONNECTOR_KEY}'. Using static configs.")
         except Exception as e:
-            logger.error(f"[Zalo] Failed to load tokens from DB: {e}")
+            logger.error(f"[Zalo Load] DB read FAILED: {type(e).__name__}: {e}")
 
 
     def _save_tokens_to_db(self, new_access_token: str, new_refresh_token: str):
@@ -423,22 +391,42 @@ class ZaloOAChannel(NotificationChannel):
         Persists the NEW tokens to 'cdp_dataconnector'.
         CRITICAL: Zalo Refresh Tokens are single-use. We must save the new one.
         """
-        if not self.db: return
+        if not self.db:
+            logger.warning("[Zalo Save] No DB client. Tokens were NOT persisted!")
+            return
 
+        logger.debug(f"[Zalo Save] Saving tokens to _key='{self.CONNECTOR_KEY}'. access=...{new_access_token[-8:]}, refresh=...{new_refresh_token[-8:]}")
         try:
             collection = self.db.collection(self.COLLECTION_NAME)
             doc = collection.get(self.CONNECTOR_KEY)
             if not doc:
-                logger.error(f"[Zalo] ❌ CRITICAL: No document with _key='{self.CONNECTOR_KEY}'. Tokens were NOT saved!")
+                logger.error(f"[Zalo Save] CRITICAL: No document with _key='{self.CONNECTOR_KEY}'. Tokens were NOT saved!")
                 return
 
             configs = doc.get("configs", {})
+            old_at = configs.get("zalo_oa_token", "")
+            old_rt = configs.get("zalo_refresh_token", "")
+            logger.debug(
+                f"[Zalo Save] Overwriting old tokens. "
+                f"old_access=...{old_at[-8:] if old_at else 'EMPTY'}, "
+                f"old_refresh=...{old_rt[-8:] if old_rt else 'EMPTY'}"
+            )
+
             configs["zalo_oa_token"] = new_access_token
             configs["zalo_refresh_token"] = new_refresh_token
             collection.update({"_key": self.CONNECTOR_KEY, "configs": configs, "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
-            logger.info("[Zalo] ✅ New tokens saved to Database successfully.")
+
+            # Verify the write by reading back
+            verify_doc = collection.get(self.CONNECTOR_KEY)
+            verify_cfg = verify_doc.get("configs", {}) if verify_doc else {}
+            saved_at = verify_cfg.get("zalo_oa_token", "")
+            saved_rt = verify_cfg.get("zalo_refresh_token", "")
+            if saved_at == new_access_token and saved_rt == new_refresh_token:
+                logger.info(f"[Zalo Save] VERIFIED: Tokens saved and confirmed in DB. access=...{saved_at[-8:]}, refresh=...{saved_rt[-8:]}")
+            else:
+                logger.error(f"[Zalo Save] MISMATCH: Write succeeded but read-back differs! expected_access=...{new_access_token[-8:]}, got=...{saved_at[-8:] if saved_at else 'EMPTY'}")
         except Exception as e:
-            logger.error(f"[Zalo] ❌ CRITICAL: Failed to save new tokens to DB! Next run will fail. Error: {e}")
+            logger.error(f"[Zalo Save] CRITICAL: DB write FAILED: {type(e).__name__}: {e}. Next run will fail!")
 
     
     # ==========================================
