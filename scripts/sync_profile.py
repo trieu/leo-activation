@@ -1,10 +1,6 @@
 import logging
-import os
 import sys
 from typing import Optional
-
-# ensure project root on path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data_workers.sync_segment_profiles import run_synch_profiles
 
