@@ -1,7 +1,10 @@
+import json
 import logging
-import ssl
 import smtplib
+import ssl
 import requests
+from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -157,6 +160,119 @@ class EmailChannel(NotificationChannel):
         except Exception as e:
             logger.error(f"SMTP Error: {e}")
             return {"status": "error", "provider": "smtp", "message": str(e)}
+
+    # ---------------------------------------------------------
+    # Batch Dispatch
+    # ---------------------------------------------------------
+
+    _EMAIL_STOCK_SQL = """
+        SELECT
+            p.profile_id,
+            p.primary_email,
+            r.product_id    AS ticker,
+            r.interest_score
+        FROM product_recommendations r
+        JOIN cdp_profiles p
+            ON  r.profile_id = p.profile_id
+            AND r.tenant_id  = p.tenant_id
+        WHERE r.tenant_id      = %s
+          AND r.product_id     = ANY(%s)
+          AND r.interest_score >= %s
+          AND p.primary_email  IS NOT NULL
+        ORDER BY p.profile_id, r.interest_score DESC
+    """
+
+    def dispatch_suggested_stock_batch(
+        self,
+        conn,
+        tenant_uuid: str,
+        redis_client,
+        today_str: str,
+        stock_map: Dict,
+    ) -> Dict[str, int]:
+        """Send personalised stock pick emails to each eligible user. Returns stats dict."""
+        from agentic_tools.channels.helpers import MessageRenderer
+        from agentic_tools.channels.templates.email.stock_picks import (
+            EMAIL_STOCK_PICKS_SUBJECT,
+            EMAIL_STOCK_PICKS_HTML,
+        )
+
+        interest_threshold: float = 0.5
+        top_tickers = list(stock_map.keys())
+        stats: Dict[str, int] = {"eligible": 0, "sent": 0, "skipped": 0, "failed": 0}
+
+        with conn.cursor() as cur:
+            cur.execute(self._EMAIL_STOCK_SQL, (tenant_uuid, top_tickers, interest_threshold))
+            rows = cur.fetchall()
+
+        # Group all matching stocks per user
+        profile_stocks: Dict[str, Dict] = defaultdict(lambda: {"email": None, "stocks": []})
+        for r in rows:
+            pid, email, ticker = r["profile_id"], r["primary_email"], r["ticker"]
+            profile_stocks[pid]["email"] = email
+            if ticker in stock_map:
+                profile_stocks[pid]["stocks"].append(stock_map[ticker])
+
+        stats["eligible"] = len(profile_stocks)
+        logger.info("[Email Suggested] Found %d eligible profiles.", len(profile_stocks))
+
+        renderer = MessageRenderer()
+
+        for profile_id, data in profile_stocks.items():
+            email = data["email"]
+            stocks = data["stocks"]
+
+            if not email or not stocks:
+                stats["skipped"] += 1
+                continue
+
+            rl_key = f"leo:email_suggested:{profile_id}:{today_str}"
+            if redis_client.get(rl_key):
+                stats["skipped"] += 1
+                continue
+
+            html_body = renderer.render_email_template(
+                EMAIL_STOCK_PICKS_HTML,
+                profile={"email": email},
+                stocks=stocks,
+            )
+
+            res = self.send_via_smtp([email], EMAIL_STOCK_PICKS_SUBJECT, html_body)
+
+            success = res.get("status") == "success"
+            delivery_status = "sent" if success else "failed"
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO delivery_log
+                        (tenant_id, marketing_event_id, profile_id, channel,
+                         delivery_status, provider_response, sent_at)
+                    VALUES (%s, %s, %s, 'email_suggested_stock', %s, %s, %s)
+                    """,
+                    (
+                        tenant_uuid,
+                        f"email_suggested_{today_str}",
+                        profile_id,
+                        delivery_status,
+                        json.dumps(res),
+                        datetime.now(timezone.utc) if success else None,
+                    ),
+                )
+            conn.commit()
+
+            if success:
+                redis_client.setex(rl_key, 86400, "1")
+                stats["sent"] += 1
+            else:
+                stats["failed"] += 1
+                logger.warning("[Email Suggested] Failed for %s: %s", email, res.get("message"))
+
+        logger.info(
+            "[Email Suggested] Done. eligible=%d sent=%d skipped=%d failed=%d",
+            stats["eligible"], stats["sent"], stats["skipped"], stats["failed"],
+        )
+        return stats
 
     # ---------------------------------------------------------
     # Orchestrator

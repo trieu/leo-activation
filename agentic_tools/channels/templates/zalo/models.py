@@ -23,3 +23,20 @@ class ZaloMessageTemplate(BaseModel):
     text: str
     image_url: str
     buttons: Optional[List[ZaloButton]] = None
+
+
+class StockRecommendation(BaseModel):
+    symbol: str
+    industry: str
+    exchange: str
+    rank: int
+    score: float
+    reasons: List[str]
+
+
+class ZaloSuggestedStockTemplate(BaseModel):
+    template_id: str
+    image_url: str
+    view_url: str
+    max_stocks: int = 3
+    buttons: Optional[List[ZaloButton]] = None

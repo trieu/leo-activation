@@ -1,15 +1,16 @@
 
+import json
 import logging
-import requests
 import re
 import time
 import random
-from typing import Dict, Any, Optional, Tuple
+import requests
 import urllib.parse
-import json
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from agentic_tools.channels.activation import NotificationChannel
-from agentic_tools.channels.templates.zalo.models import ZaloMessageTemplate
+from agentic_tools.channels.templates.zalo.models import ZaloMessageTemplate, ZaloSuggestedStockTemplate, StockRecommendation
 
 from main_configs import MarketingConfigs
 
@@ -35,8 +36,10 @@ def extract_zalo_user_id(media_channels: list) -> Optional[str]:
 
 class ZaloOAChannel(NotificationChannel):
     # Constants for DB Lookup
-    CONNECTOR_KEY = "leo-zalo-connector"
-    COLLECTION_NAME = "cdp_agent"
+    # CONNECTOR_KEY = "leo-zalo-connector"
+    # COLLECTION_NAME = "cdp_agent"
+    CONNECTOR_KEY = "leo_zalo_connector"
+    COLLECTION_NAME = "cdp_dataconnector"
 
     def __init__(self, override_token: str = None, db_client=None):
         # Assign the passed DB client directly
@@ -175,6 +178,68 @@ class ZaloOAChannel(NotificationChannel):
                     "payload": {
                         "template_type": "media",
                         "elements": [{"media_type": "image", "url": image}],
+                    },
+                },
+            },
+        }
+
+        if template.buttons:
+            payload["message"]["attachment"]["payload"]["buttons"] = [
+                b.model_dump() for b in template.buttons
+            ]
+
+        return self._execute_api_post(url, payload)
+
+    def send_suggested_stock(
+        self,
+        zalo_user_id: str,
+        template: ZaloSuggestedStockTemplate,
+        stocks: Optional[List[StockRecommendation]] = None,
+    ) -> Tuple[bool, int, str]:
+        """
+        Fetches top stock recommendations from the analysis API and sends them
+        as a formatted Zalo CS message with image and interactive buttons.
+
+        If `stocks` is provided, skips the API fetch and uses the given list directly.
+        """
+        if stocks is None:
+            try:
+                resp = requests.get(
+                    "https://news-analysis.innotech.vn/api/v1/stock/recommend_stock",
+                    timeout=10,
+                )
+                data = resp.json()
+                raw = data.get("recommendations", [])
+                stocks = [StockRecommendation(**r) for r in raw]
+            except Exception as e:
+                logger.error(f"[Zalo] Failed to fetch stock recommendations: {e}")
+                return False, -999, str(e)
+
+        if not stocks:
+            return False, -998, "No stock recommendations available."
+
+        s = stocks[0]
+        lines = [
+            f"📊 Cổ phiếu tiềm năng hôm nay: {s.symbol}",
+            f"Sàn: {s.exchange} | Ngành: {s.industry} | Score: {s.score:.1f}\n",
+            "📋 Lý do phân tích:",
+        ]
+        for reason in s.reasons:
+            lines.append(f"  - {reason}")
+
+        lines.append(f"\n👉 Xem chi tiết tại: {template.view_url}")
+        text = "\n".join(lines)
+
+        url = "https://openapi.zalo.me/v3.0/oa/message/cs"
+        payload = {
+            "recipient": {"user_id": zalo_user_id},
+            "message": {
+                "text": text,
+                "attachment": {
+                    "type": "template",
+                    "payload": {
+                        "template_type": "media",
+                        "elements": [{"media_type": "image", "url": template.image_url}],
                     },
                 },
             },
@@ -487,6 +552,218 @@ class ZaloOAChannel(NotificationChannel):
             # logger.info(f"[CDP] Verified Zalo phone saved: {phone}")
         except Exception as e:
             logger.error(f"[CDP] Failed to save verified phone {phone}: {e}")
+
+    # ==========================================
+    # BATCH DISPATCH METHODS
+    # ==========================================
+
+    _PROMO_ELIGIBILITY_SQL = """
+        SELECT DISTINCT ON (p.profile_id)
+            p.profile_id,
+            p.media_channels,
+            r.product_id  AS ticker,
+            r.interest_score
+        FROM product_recommendations r
+        JOIN cdp_profiles p
+            ON  r.profile_id = p.profile_id
+            AND r.tenant_id  = p.tenant_id
+        WHERE r.tenant_id = %s
+          AND r.interest_score > %s
+          AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements_text(p.media_channels) AS ch
+                WHERE ch LIKE 'zalo_user_id:%%'
+              )
+          AND (p.event_statistics ->> %s)::int > %s
+        ORDER BY p.profile_id, r.interest_score DESC
+    """
+
+    _SUGGESTED_STOCK_SQL = """
+        SELECT DISTINCT ON (p.profile_id)
+            p.profile_id,
+            p.media_channels,
+            r.product_id  AS ticker,
+            r.interest_score
+        FROM product_recommendations r
+        JOIN cdp_profiles p
+            ON  r.profile_id = p.profile_id
+            AND r.tenant_id  = p.tenant_id
+        WHERE r.tenant_id      = %s
+          AND r.product_id     = ANY(%s)
+          AND r.interest_score >= %s
+          AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements_text(p.media_channels) AS ch
+                WHERE ch LIKE 'zalo_user_id:%%'
+              )
+        ORDER BY p.profile_id, r.interest_score DESC
+    """
+
+    def dispatch_promo_batch(
+        self,
+        conn,
+        tenant_uuid: str,
+        redis_client,
+        today_str: str,
+    ) -> Dict[str, int]:
+        """Send Zalo promotional messages to all eligible users. Returns stats dict."""
+        import os
+
+        interest_threshold: float = MarketingConfigs.ZALO_PROMO_INTEREST_THRESHOLD
+        event_count_threshold: int = MarketingConfigs.ZALO_PROMO_EVENT_COUNT_THRESHOLD
+        event_key_pattern: str = os.getenv("ZALO_PROMO_EVENT_KEY_PATTERN", "id_default_journey-page-view")
+        stats: Dict[str, int] = {"eligible": 0, "sent": 0, "skipped": 0, "failed": 0}
+
+        with conn.cursor() as cur:
+            cur.execute(
+                self._PROMO_ELIGIBILITY_SQL,
+                (tenant_uuid, interest_threshold, event_key_pattern, event_count_threshold),
+            )
+            rows = [
+                {"profile_id": r[0], "media_channels": r[1], "ticker": r[2], "interest_score": float(r[3])}
+                for r in cur.fetchall()
+            ]
+
+        stats["eligible"] = len(rows)
+        logger.info("[Zalo Promo] Found %d eligible users.", len(rows))
+
+        for row in rows:
+            profile_id: str = row["profile_id"]
+            zalo_uid = extract_zalo_user_id(row["media_channels"])
+            if not zalo_uid:
+                stats["skipped"] += 1
+                continue
+
+            rl_key = f"leo:zalo_promo:{profile_id}:{today_str}"
+            if redis_client.get(rl_key):
+                stats["skipped"] += 1
+                continue
+
+            ticker: str = row["ticker"]
+            score: float = row["interest_score"]
+            template_data = {
+                "title": f"{ticker} — Cập nhật mới",
+                "subtitle": f"Interest score: {score:.2f}",
+                "image_url": "",
+                "url": "",
+            }
+
+            success, error_code, msg = self.send_promotional_message(
+                zalo_uid, MarketingConfigs.ZALO_ZNS_TEMPLATE_ID, template_data
+            )
+
+            delivery_status = "sent" if success else "failed"
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO delivery_log
+                        (tenant_id, marketing_event_id, profile_id, channel,
+                         delivery_status, provider_response, sent_at)
+                    VALUES (%s, %s, %s, 'zalo_promo', %s, %s, %s)
+                    """,
+                    (
+                        tenant_uuid,
+                        f"zalo_promo_{ticker}_{today_str}",
+                        profile_id,
+                        delivery_status,
+                        json.dumps({"error_code": error_code, "message": msg}),
+                        datetime.now(timezone.utc) if success else None,
+                    ),
+                )
+            conn.commit()
+
+            if success:
+                redis_client.setex(rl_key, 86400, "1")
+                stats["sent"] += 1
+            else:
+                stats["failed"] += 1
+                logger.warning("[Zalo Promo] Failed for %s (ticker=%s): %d — %s", profile_id, ticker, error_code, msg)
+
+        logger.info(
+            "[Zalo Promo] Done. eligible=%d sent=%d skipped=%d failed=%d",
+            stats["eligible"], stats["sent"], stats["skipped"], stats["failed"],
+        )
+        return stats
+
+    def dispatch_suggested_stock_batch(
+        self,
+        conn,
+        tenant_uuid: str,
+        redis_client,
+        today_str: str,
+        stock_map: Dict,
+    ) -> Dict[str, int]:
+        """Send best-match stock recommendation to each eligible Zalo user. Returns stats dict."""
+        from agentic_tools.channels.templates.zalo.suggested_stock import SUGGESTED_STOCK_TEMPLATE
+
+        interest_threshold: float = 0.5
+        top_tickers = list(stock_map.keys())
+        stats: Dict[str, int] = {"eligible": 0, "sent": 0, "skipped": 0, "failed": 0}
+
+        with conn.cursor() as cur:
+            cur.execute(self._SUGGESTED_STOCK_SQL, (tenant_uuid, top_tickers, interest_threshold))
+            rows = [
+                {"profile_id": r[0], "media_channels": r[1], "ticker": r[2], "interest_score": float(r[3])}
+                for r in cur.fetchall()
+            ]
+
+        stats["eligible"] = len(rows)
+        logger.info("[Zalo Suggested] Found %d eligible profiles.", len(rows))
+
+        for row in rows:
+            profile_id: str = row["profile_id"]
+            zalo_uid = extract_zalo_user_id(row["media_channels"])
+            if not zalo_uid:
+                stats["skipped"] += 1
+                continue
+
+            rl_key = f"leo:zalo_suggested:{profile_id}:{today_str}"
+            if redis_client.get(rl_key):
+                stats["skipped"] += 1
+                continue
+
+            matched_stock = stock_map.get(row["ticker"])
+            stocks_to_send = [matched_stock] if matched_stock else [next(iter(stock_map.values()))]
+
+            success, error_code, msg = self.send_suggested_stock(
+                zalo_user_id=zalo_uid,
+                template=SUGGESTED_STOCK_TEMPLATE,
+                stocks=stocks_to_send,
+            )
+
+            delivery_status = "sent" if success else "failed"
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO delivery_log
+                        (tenant_id, marketing_event_id, profile_id, channel,
+                         delivery_status, provider_response, sent_at)
+                    VALUES (%s, %s, %s, 'zalo_suggested_stock', %s, %s, %s)
+                    """,
+                    (
+                        tenant_uuid,
+                        f"zalo_suggested_{row['ticker']}_{today_str}",
+                        profile_id,
+                        delivery_status,
+                        json.dumps({"error_code": error_code, "message": msg}),
+                        datetime.now(timezone.utc) if success else None,
+                    ),
+                )
+            conn.commit()
+
+            if success:
+                redis_client.setex(rl_key, 86400, "1")
+                stats["sent"] += 1
+            else:
+                stats["failed"] += 1
+                logger.warning(
+                    "[Zalo Suggested] Failed for %s (ticker=%s): %d — %s",
+                    profile_id, row["ticker"], error_code, msg,
+                )
+
+        logger.info(
+            "[Zalo Suggested] Done. eligible=%d sent=%d skipped=%d failed=%d",
+            stats["eligible"], stats["sent"], stats["skipped"], stats["failed"],
+        )
+        return stats
 
     def get_segment_contacts(self, segment_id: str) -> list:
         """

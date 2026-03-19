@@ -128,6 +128,12 @@ class NextLikelyActionResponse(BaseModel):
     next_likely_actions: Dict[str, LikelyActionDetail]
 
 
+class SegmentProfileResponse(BaseModel):
+    """Profile ID and email for a user in a segment."""
+    profile_id: str
+    primary_email: Optional[str] = None
+
+
 # ============================================================
 # API ENDPOINTS
 # ============================================================
@@ -264,6 +270,39 @@ async def get_nla_endpoint(
         logger.error(f"❌ NLA Error for '{user_id}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+_SQL_PROFILES_IN_SEGMENT = """
+    SELECT profile_id, primary_email
+    FROM cdp_profiles
+    WHERE segments @> jsonb_build_array(jsonb_build_object('name', %s::text))
+"""
+
+
+def _get_profiles_for_segment(segment_name: str, conn: psycopg.Connection) -> List[SegmentProfileResponse]:
+    with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(_SQL_PROFILES_IN_SEGMENT, (segment_name,))
+        return [SegmentProfileResponse(**row) for row in cur.fetchall()]
+
+
+# 5. PRODUCTION SEGMENT PROFILES
+@router.get("/segments/production-users", response_model=List[SegmentProfileResponse])
+async def get_production_segment_profiles(conn: psycopg.Connection = Depends(get_db)):
+    """
+    Returns profile_id and primary_email for all profiles in segment
+    'Production 1invest Users'.
+    """
+    return _get_profiles_for_segment("Production 1invest Users", conn)
+
+
+# 6. UAT SEGMENT PROFILES
+@router.get("/segments/uat-users", response_model=List[SegmentProfileResponse])
+async def get_uat_segment_profiles(conn: psycopg.Connection = Depends(get_db)):
+    """
+    Returns profile_id and primary_email for all profiles in segment
+    'UAT 1invest Users'.
+    """
+    return _get_profiles_for_segment("UAT 1invest Users", conn)
 
 
 # FIX 1: The path should just be "/webhook/zalo"
