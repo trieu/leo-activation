@@ -138,31 +138,69 @@ class SegmentProfileResponse(BaseModel):
 # API ENDPOINTS
 # ============================================================
 
-# 1. FIND AUDIENCE (Who likes this stock?)
+_SEGMENT_PROD = "Production 1invest Users"
+_SEGMENT_UAT = "UAT 1invest Users"
+
+
+async def _interested_by_segment(
+    ticker: str,
+    min_score: float,
+    conn: psycopg.Connection,
+    segment_name: Optional[str] = None,
+) -> List[InterestedUserResponse]:
+    target_tenant = os.getenv("TARGET_TENANT", "master")
+    tenant_uuid, _ = resolve_ids(conn, target_tenant, "Active in last 3 months")
+    raw_results = get_interested_users(conn, tenant_uuid, ticker, min_score)
+
+    if segment_name:
+        allowed_ids = {p.profile_id for p in _get_profiles_for_segment(segment_name, conn)}
+        raw_results = [r for r in raw_results if r["profile_id"] in allowed_ids]
+
+    return [InterestedUserResponse(**r) for r in raw_results]
+
+
+# 1a. FIND AUDIENCE — All segments
 @router.get("/interested/{ticker}", response_model=List[InterestedUserResponse])
 async def get_interested_users_endpoint(
     ticker: str,
     min_score: float = Query(0.5, description="Minimum score 0.0-1.0"),
     conn: psycopg.Connection = Depends(get_db)
 ):
-    """
-    Finds users interested in a specific ticker (e.g., 'AAPL').
-    Useful for: Targeted Campaigns (e.g., "Send update to everyone watching NVDA").
-    """
+    """Finds all users interested in a ticker regardless of segment."""
     try:
-        # Resolve Tenant Context (Secure)
-        target_tenant = os.getenv("TARGET_TENANT", "master")
-        # Reuse resolve_ids logic to get the correct Tenant UUID
-        tenant_uuid, _ = resolve_ids(conn, target_tenant, "Active in last 3 months")
-
-        # Call Worker
-        raw_results = get_interested_users(conn, tenant_uuid, ticker, min_score)
-        
-        # Map to Pydantic (Worker returns list of dicts)
-        return [InterestedUserResponse(**r) for r in raw_results]
-
+        return await _interested_by_segment(ticker, min_score, conn)
     except Exception as e:
         logger.error(f"❌ Audience Query Error for '{ticker}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 1b. FIND AUDIENCE — Production segment only
+@router.get("/interested-prod/{ticker}", response_model=List[InterestedUserResponse])
+async def get_interested_users_prod_endpoint(
+    ticker: str,
+    min_score: float = Query(0.5, description="Minimum score 0.0-1.0"),
+    conn: psycopg.Connection = Depends(get_db)
+):
+    """Finds users interested in a ticker, filtered to Production 1invest Users."""
+    try:
+        return await _interested_by_segment(ticker, min_score, conn, _SEGMENT_PROD)
+    except Exception as e:
+        logger.error(f"❌ Audience Query Error (prod) for '{ticker}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 1c. FIND AUDIENCE — UAT segment only
+@router.get("/interested-uat/{ticker}", response_model=List[InterestedUserResponse])
+async def get_interested_users_uat_endpoint(
+    ticker: str,
+    min_score: float = Query(0.5, description="Minimum score 0.0-1.0"),
+    conn: psycopg.Connection = Depends(get_db)
+):
+    """Finds users interested in a ticker, filtered to UAT 1invest Users."""
+    try:
+        return await _interested_by_segment(ticker, min_score, conn, _SEGMENT_UAT)
+    except Exception as e:
+        logger.error(f"❌ Audience Query Error (uat) for '{ticker}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -283,26 +321,6 @@ def _get_profiles_for_segment(segment_name: str, conn: psycopg.Connection) -> Li
     with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
         cur.execute(_SQL_PROFILES_IN_SEGMENT, (segment_name,))
         return [SegmentProfileResponse(**row) for row in cur.fetchall()]
-
-
-# 5. PRODUCTION SEGMENT PROFILES
-@router.get("/segments/production-users", response_model=List[SegmentProfileResponse])
-async def get_production_segment_profiles(conn: psycopg.Connection = Depends(get_db)):
-    """
-    Returns profile_id and primary_email for all profiles in segment
-    'Production 1invest Users'.
-    """
-    return _get_profiles_for_segment("Production 1invest Users", conn)
-
-
-# 6. UAT SEGMENT PROFILES
-@router.get("/segments/uat-users", response_model=List[SegmentProfileResponse])
-async def get_uat_segment_profiles(conn: psycopg.Connection = Depends(get_db)):
-    """
-    Returns profile_id and primary_email for all profiles in segment
-    'UAT 1invest Users'.
-    """
-    return _get_profiles_for_segment("UAT 1invest Users", conn)
 
 
 # FIX 1: The path should just be "/webhook/zalo"
