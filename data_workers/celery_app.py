@@ -46,7 +46,23 @@ worker.conf.update(
 # ---------------------------------------------------------
 worker.conf.beat_schedule = {
     "sync-arango-to-pg-profiles": {
-        "task": "tasks.sync_profiles_task",
+        "task": "data_workers.tasks.sync_profiles_task",
         "schedule": SYNC_PROFILES_CRON,
+    },
+    "zalo-promo-daily-dispatch": {
+        "task": "data_workers.tasks.zalo_promo_dispatch",
+        "schedule": crontab(minute="0", hour="2"),  # 02:00 UTC = 09:00 VN (UTC+7)
+    },
+    "zalo-suggested-stock-daily": {
+        "task": "data_workers.tasks.zalo_suggested_stock_dispatch",
+        "schedule": crontab(minute="45", hour="1"),  # 01:45 UTC = 08:45 VN (UTC+7)
+    },
+    "email-suggested-stock-daily": {
+        "task": "data_workers.tasks.email_suggested_stock_dispatch",
+        "schedule": crontab(minute="45", hour="1"),  # 01:45 UTC = 08:45 VN (UTC+7)
+    },
+    "sync-active-users-portfolios": {
+        "task": "data_workers.tasks.sync_active_users_portfolios_task",
+        "schedule": crontab(minute="30", hour="1"),  # 01:30 UTC = 08:30 VN (UTC+7)
     },
 }
