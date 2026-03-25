@@ -6,7 +6,7 @@ from typing import Optional
 # ensure project root on path for imports used by tests
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from data_workers.sync_segment_profiles import run_synch_profiles
+from data_workers.sync.sync_segment_profiles import run_synch_profiles
 logger = logging.getLogger(__name__)
 
 

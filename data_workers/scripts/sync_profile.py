@@ -2,7 +2,7 @@ import logging
 import sys
 from typing import Optional
 
-from data_workers.sync_segment_profiles import run_synch_profiles
+from data_workers.sync.sync_segment_profiles import run_synch_profiles
 
 logger = logging.getLogger(__name__)
 

@@ -7,7 +7,7 @@ import redis
 from celery import shared_task
 
 from data_models.dbo_tenant import get_default_tenant_id
-from data_workers.sync_segment_profiles import run_synch_profiles
+from data_workers.sync.sync_segment_profiles import run_synch_profiles
 from main_configs import CELERY_REDIS_URL
 
 # --------------------------------------------------
@@ -253,7 +253,7 @@ def email_suggested_stock_dispatch(self, *, tenant_id: Optional[str] = None) -> 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=60, retry_kwargs={"max_retries": 2})
 def sync_active_users_portfolios_task(self, *, tenant_name: Optional[str] = None) -> None:
     """Temporary cronjob: sync portfolio data from FE events until CDC is restored."""
-    from scripts.sync_active_users_portfolios import sync_active_users_portfolios
+    from data_workers.sync.sync_active_users_portfolios import sync_active_users_portfolios
 
     result = sync_active_users_portfolios(tenant_name=tenant_name)
     logger.info(

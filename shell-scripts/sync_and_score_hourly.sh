@@ -14,12 +14,14 @@ echo "--- Starting scheduled job for profile $PROFILE_ID at $(date) ---"
 # Notice the addition of the '-T' flag to prevent TTY errors in cron.
 /usr/bin/docker compose run -T --rm api bash -c "
     echo '--- Step 1: Syncing profile ---' && \
-    python -m scripts.sync_profile '$PROFILE_ID' && \
+    python -m data_workers.scripts.sync_profile '$PROFILE_ID' && \
     echo '--- Step 2: Backfilling primary email from identities ---' && \
-    python -m scripts.backfill_primary_email && \
-    echo '--- Step 3: Running interest score calculation ---' && \
+    python -m data_workers.scripts.backfill_primary_email && \
+    echo '--- Step 3: Syncing active users portfolios ---' && \
+    python -m data_workers.sync.sync_active_users_portfolios && \
+    echo '--- Step 4: Running interest score calculation ---' && \
     python -m agentic_tools.recommendation_system.interest_score && \
-    echo '--- Step 4: Running recommendation orchestrator (NBA/NLA upsert) ---' && \
+    echo '--- Step 5: Running recommendation orchestrator (NBA/NLA upsert) ---' && \
     python -m agentic_tools.recommendation_orchestrator
 "
 

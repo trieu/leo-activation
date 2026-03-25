@@ -1,8 +1,8 @@
 import logging
 from typing import Optional
 from data_models.pg_profile import PGProfileUpsert
-from data_workers.arango_profile_repository import ArangoProfileRepository
-from data_workers.pg_profile_repository import PGProfileRepository
+from data_workers.repositories.arango_profile_repository import ArangoProfileRepository
+from data_workers.repositories.pg_profile_repository import PGProfileRepository
 
 logger = logging.getLogger(__name__)
 
