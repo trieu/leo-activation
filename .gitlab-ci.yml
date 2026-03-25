@@ -25,7 +25,7 @@ build_core_api:
     - docker push $IMAGE_LATEST
   rules:
     # Only run this build when code is pushed to the main branch
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "DATA-146-standardize-pipeline"'
 
 # ---------------------------------------------------------
 # FUTURE STAGE: BUILD CDC SERVICES (Placeholder)
