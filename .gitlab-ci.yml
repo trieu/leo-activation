@@ -1,0 +1,40 @@
+stages:
+  # - test  # TEMPORARILY DISABLED: Pending DB mocking/Service Containers
+  - build
+  # - deploy # We will add this in the next step
+
+# ---------------------------------------------------------
+# STAGE 2: BUILD MAIN APP (FastAPI / Celery)
+# ---------------------------------------------------------
+build_core_api:
+  stage: build
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  variables:
+    # Notice we added "/core" to the registry path. 
+    # This leaves room for "$CI_REGISTRY_IMAGE/cdc_poller" later!
+    IMAGE_TAG: $CI_REGISTRY_IMAGE/core:$CI_COMMIT_SHORT_SHA
+    IMAGE_LATEST: $CI_REGISTRY_IMAGE/core:latest
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+  script:
+    # Building from the root Dockerfile
+    - docker build -t $IMAGE_TAG -t $IMAGE_LATEST .
+    - docker push $IMAGE_TAG
+    - docker push $IMAGE_LATEST
+  rules:
+    # Only run this build when code is pushed to the main branch
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ---------------------------------------------------------
+# FUTURE STAGE: BUILD CDC SERVICES (Placeholder)
+# ---------------------------------------------------------
+# build_cdc_poller:
+#   stage: build
+#   ... (same as above)
+#   variables:
+#     IMAGE_TAG: $CI_REGISTRY_IMAGE/cdc_poller:$CI_COMMIT_SHORT_SHA
+#   script:
+#     - docker build -f services/cdc_poller/Dockerfile -t $IMAGE_TAG .
+#     - docker push $IMAGE_TAG
