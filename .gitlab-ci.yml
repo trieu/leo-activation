@@ -1,7 +1,7 @@
 stages:
   # - test  # TEMPORARILY DISABLED: Pending DB mocking/Service Containers
   - build
-  # - deploy # We will add this in the next step
+  - deploy
 
 # ---------------------------------------------------------
 # STAGE 2: BUILD MAIN APP (FastAPI / Celery)
@@ -55,3 +55,5 @@ deploy_staging:
     - ssh $STAGING_USER@$STAGING_SERVER_IP "cd ~/staging-app && docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY && docker compose pull && docker compose up -d"
   only:
     - api-ai-team
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "DATA-146-standardize-pipeline"'
