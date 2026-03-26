@@ -16,6 +16,7 @@ build_core_api:
     # This leaves room for "$CI_REGISTRY_IMAGE/cdc_poller" later!
     IMAGE_TAG: $CI_REGISTRY_IMAGE/core:$CI_COMMIT_SHORT_SHA
     IMAGE_LATEST: $CI_REGISTRY_IMAGE/core:latest
+    DOCKER_TLS_CERTDIR: ""
   before_script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
   script:
