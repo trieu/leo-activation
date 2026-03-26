@@ -54,8 +54,8 @@ deploy_staging:
     - mkdir -p ~/.ssh
     - ssh-keyscan -H $STAGING_SERVER_IP >> ~/.ssh/known_hosts
   script:
-    # SSH into the machine, log into the registry, pull the new image, and restart compose
-    - ssh $STAGING_USER@$STAGING_SERVER_IP "cd ~/staging-app && docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY && docker compose pull && docker compose up -d"
+    # We pipe the password into docker login securely, then pull and start the app!
+    - ssh $STAGING_USER@$STAGING_SERVER_IP "cd ~/staging-app && echo \"$CI_REGISTRY_PASSWORD\" | docker login -u \"$CI_REGISTRY_USER\" --password-stdin $CI_REGISTRY && docker compose pull && docker compose up -d"
   rules:
     # Make sure this matches the build job perfectly!
     - if: '$CI_COMMIT_BRANCH == "DATA-146-standardize-pipeline"'
