@@ -4,7 +4,7 @@ stages:
   - deploy
 
 # ---------------------------------------------------------
-# STAGE 2: BUILD MAIN APP (FastAPI / Celery)
+# STAGE 1: BUILD MAIN APP (FastAPI / Celery)
 # ---------------------------------------------------------
 build_core_api:
   stage: build
@@ -42,16 +42,27 @@ build_core_api:
 #     - docker push $IMAGE_TAG
 
 # ---------------------------------------------------------
-# STAGE 4: DEPLOY TO STAGING
+# STAGE 2: DEPLOY TO PRODUCTION (Zero-Downtime Blue-Green)
 # ---------------------------------------------------------
 deploy_production:
   stage: deploy
   image: alpine:latest
   before_script:
-    - apk add --no-cache openssh-client curl
+    - apk add --no-cache openssh-client curl bash
     - eval $(ssh-agent -s)
-    - echo "$PROD_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
     - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    
+    # DEBUG: This will print the character count of your key to ensure it isn't empty/protected
+    - echo "Length of PROD_SSH_PRIVATE_KEY is ${#PROD_SSH_PRIVATE_KEY}"
+    
+    # BULLETPROOF SSH KEY INJECTION: 
+    # Write to a file and force a trailing newline to prevent libcrypto parsing errors
+    - echo "$PROD_SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - echo "" >> ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-add ~/.ssh/id_rsa
+    
     - ssh-keyscan -H $PROD_SERVER_IP >> ~/.ssh/known_hosts
   script:
     - ssh $PROD_USER@$PROD_SERVER_IP "export DOCKER_CONFIG=~/.docker-ci && mkdir -p ~/.docker-ci && echo '{}' > ~/.docker-ci/config.json && echo \"$CI_REGISTRY_PASSWORD\" | docker login -u \"$CI_REGISTRY_USER\" --password-stdin $CI_REGISTRY && cd ~/prod-app && bash deploy_blue_green.sh"
