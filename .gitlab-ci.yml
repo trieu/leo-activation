@@ -27,9 +27,7 @@ build_core_api:
     - docker push $IMAGE_TAG
     - docker push $IMAGE_LATEST
   rules:
-    # CRITICAL FIX: The build job must run on BOTH branches so the production branch gets a fresh image!
-    - if: '$CI_COMMIT_BRANCH == "DATA-146-standardize-pipeline"'
-    - if: '$CI_COMMIT_BRANCH == "api-ai-team"'
+    - if: $CI_COMMIT_BRANCH
 
 # ---------------------------------------------------------
 # FUTURE STAGE: BUILD CDC SERVICES (Placeholder)
