@@ -712,6 +712,10 @@ CREATE TABLE IF NOT EXISTS delivery_log (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Rate-limit lookups: 1 promotional message per user per day
+CREATE INDEX IF NOT EXISTS idx_delivery_log_rate_limit
+    ON delivery_log (tenant_id, profile_id, channel, sent_at DESC);
+
 -- ============================================================
 -- 13. EMBEDDING QUEUE
 -- ============================================================
@@ -1178,10 +1182,94 @@ CREATE INDEX IF NOT EXISTS idx_pr_updated_at
         updated_at
     );
 
+-- ============================================================
+-- 22. FINANCIAL PORTFOLIOS (ACCOUNTS)
+-- ============================================================
+-- Stores high-level account balances and financial metrics per user.
+-- Supports a 1:N relationship (One Profile -> Multiple Sub-Accounts e.g., Cash, Margin).
+-- Acts as the aggregate source of truth synced from ArangoDB / Core Banking.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS portfolios (
+    tenant_id UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
+    account_id TEXT PRIMARY KEY, 
+    base_account_id TEXT NOT NULL,
+    account_type TEXT NOT NULL, 
+    account_suffix TEXT NOT NULL,
+    profile_id TEXT NOT NULL REFERENCES cdp_profiles(profile_id) ON DELETE CASCADE,
 
+    -- Numeric balances only
+    nav NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    cash_total NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    debt_total NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    collaterals NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    margin_limit NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    pnl NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    rtt_ratio NUMERIC(7, 4),
+
+    -- We keep asset_allocation as a tiny JSONB map because it's rarely updated 
+    -- and usually computed daily (e.g., {"cash": 0.2, "stock": 0.8})
+    asset_allocation JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+    source_timestamp TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CONSTRAINT uq_portfolio_tenant_account UNIQUE (tenant_id, account_id)
+);
 
 -- ============================================================
--- 22. SYSTEM BOOTSTRAP: Safely bootstrap 'master' tenant
+-- 23. PORTFOLIO HOLDINGS (ASSETS)
+-- ============================================================
+-- Normalized ledger of individual assets held within a specific sub-account.
+-- Separated from the main portfolios table to prevent JSONB bloat and MVCC churn.
+-- Optimized for fast, atomic quantity updates and high-speed AI filtering.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS portfolio_holdings (
+    tenant_id UUID NOT NULL REFERENCES tenant(tenant_id) ON DELETE CASCADE,
+    
+    -- The specific sub-account this asset sits in
+    account_id TEXT NOT NULL REFERENCES portfolios(account_id) ON DELETE CASCADE,
+    
+    -- The Asset
+    symbol VARCHAR(20) NOT NULL, -- e.g., 'VNM', 'HPG'
+    
+    -- Quantitative Data
+    quantity NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    avg_price NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    current_price NUMERIC(19, 4) NOT NULL DEFAULT 0,
+    
+    -- Real-time metrics
+    market_value NUMERIC(19, 4) GENERATED ALWAYS AS (quantity * current_price) STORED,
+    unrealized_pnl NUMERIC(19, 4) GENERATED ALWAYS AS ((current_price - avg_price) * quantity) STORED,
+
+    source_timestamp TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- A user can only have one active row per symbol per sub-account
+    CONSTRAINT pk_portfolio_holdings PRIMARY KEY (tenant_id, account_id, symbol)
+);
+
+-- Fast lookup for cross-account filtering (The "Who holds VNM?" query)
+CREATE INDEX IF NOT EXISTS idx_holdings_symbol 
+    ON portfolio_holdings (tenant_id, symbol);
+
+-- Fast lookup for rendering a specific user's portfolio UI
+CREATE INDEX IF NOT EXISTS idx_holdings_account 
+    ON portfolio_holdings (tenant_id, account_id);
+
+-- Trigger for updated_at
+CREATE TRIGGER trg_holdings_updated_at
+BEFORE UPDATE ON portfolio_holdings
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+-- Enable RLS
+ALTER TABLE portfolio_holdings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY holdings_tenant_rls ON portfolio_holdings
+    USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+-- ============================================================
+-- 24. SYSTEM BOOTSTRAP: Safely bootstrap 'master' tenant
 -- ============================================================
 
 -- RLS-safe: temporarily disable RLS for bootstrap
@@ -1227,7 +1315,6 @@ BEGIN
 
     RAISE NOTICE 'Session configured for tenant=master, tenant_id=%', v_tenant_id;
 END $$;
-
 
 -- =========================
 -- END OF SCHEMA.SQL

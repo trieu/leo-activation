@@ -23,21 +23,22 @@ from agentic_tools.tools import (
     manage_cdp_segment,
 )
 from agentic_tools.channels.zalo import ZaloOAChannel
-from data_workers.sync_segment_profiles import run_synch_profiles_async
-from data_workers.sync_segment_profiles import run_synch_profiles
+from data_workers.sync.sync_segment_profiles import run_synch_profiles_async
+from data_workers.sync.sync_segment_profiles import run_synch_profiles
 from main_configs import DATA_SYNC_API_KEY
 
 from api.recommendation_system import router as rec_router
+from api.portfolio import router as portfolio_router
 from fastapi.responses import FileResponse
 
 # --- DB UTILS ---
 # We need these for the /interested endpoint
-# from data_workers.pg_profile_repository import get_users_by_ticker_interest
+# from data_workers.repositories.pg_profile_repository import get_users_by_ticker_interest
 from data_utils.settings import DatabaseSettings
 
 # Import the worker function for sync
 try:
-    from data_workers.sync_segment_profiles import run_synch_profiles
+    from data_workers.sync.sync_segment_profiles import run_synch_profiles
 except ImportError:
     logging.warning("Could not import 'run_synch_profiles'. Sync features will fail if called.")
     def run_synch_profiles(segment_id: str):
@@ -138,6 +139,7 @@ def create_api_router(agent_router: AgentRouter) -> APIRouter:
             tools_map[name] = func
     
     router.include_router(rec_router)
+    router.include_router(portfolio_router)
 
     # --------------------------------------------------------
     # 1. Tool Calling

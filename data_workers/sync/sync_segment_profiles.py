@@ -5,19 +5,65 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from functools import partial
 
+import redis as redis_lib
+
 # --- Imports (Assuming these exist in your project structure) ---
 from data_models.dbo_tenant import resolve_tenant_id, set_tenant_context
-from data_utils.db_factory import get_db_context 
+from data_utils.db_factory import get_db_context
 from data_utils.settings import DatabaseSettings
-from data_workers.arango_profile_repository import ArangoProfileRepository
-from data_workers.arango_to_pg_profile_sync_service import ArangoToPostgresSyncService
-from data_workers.pg_profile_repository import PGProfileRepository
+from data_workers.repositories.arango_profile_repository import ArangoProfileRepository
+from data_workers.sync.arango_to_pg_profile_sync_service import ArangoToPostgresSyncService
+from data_workers.repositories.pg_profile_repository import PGProfileRepository
 
 logger = logging.getLogger(__name__)
 
 # Global executor for offloading sync tasks to threads
 # You can also pass a specific executor if running inside a larger app
 _DEFAULT_EXECUTOR = ThreadPoolExecutor(max_workers=4)
+
+
+def _populate_fingerprint_cache(arango_db, segment_id: Optional[str], segment_name: Optional[str]) -> None:
+    """
+    After profile sync, cache fingerprintId→profile_id in Redis DB 2.
+    The real-time scoring consumer uses this for O(1) lookups instead of
+    querying ArangoDB per event.
+    """
+    import os
+    cache_redis_url = os.getenv("CDC_REDIS_URL", "redis://redis:6379/2")
+    try:
+        r = redis_lib.from_url(cache_redis_url, decode_responses=True)
+
+        # Build the appropriate AQL filter depending on what's available
+        if segment_id:
+            query = """
+            FOR p IN cdp_profile
+                FILTER @seg IN p.inSegments[*].id
+                FILTER p.fingerprintId != null
+                RETURN { fid: p.fingerprintId, pid: p._key }
+            """
+            bind_vars = {"seg": segment_id}
+        elif segment_name:
+            query = """
+            FOR p IN cdp_profile
+                FILTER @seg IN p.inSegments[*].name
+                FILTER p.fingerprintId != null
+                RETURN { fid: p.fingerprintId, pid: p._key }
+            """
+            bind_vars = {"seg": segment_name}
+        else:
+            logger.warning("No segment filter for fingerprint cache, skipping")
+            return
+
+        cursor = arango_db.aql.execute(query, bind_vars=bind_vars)
+        count = 0
+        for doc in cursor:
+            fid, pid = doc["fid"], doc["pid"]
+            if fid and pid:
+                r.setex(f"fp:{fid}", 86400, pid)
+                count += 1
+        logger.info("Fingerprint cache populated: %d entries (TTL=24h)", count)
+    except Exception:
+        logger.exception("Failed to populate fingerprint cache (non-fatal)")
 
 
 def _execute_sync_logic(
@@ -55,7 +101,7 @@ def _execute_sync_logic(
             set_tenant_context(pg_session, resolved_tid)
 
             # 4. Infrastructure Wiring
-            arango_repo = ArangoProfileRepository(arango_db, batch_size=2)
+            arango_repo = ArangoProfileRepository(arango_db, batch_size=500)
             pg_repo = PGProfileRepository(pg_session)
 
             sync_service = ArangoToPostgresSyncService(
@@ -79,6 +125,14 @@ def _execute_sync_logic(
                 "Sync completed successfully. Tenant: %s | Profiles: %d",
                 resolved_tid, synced_count
             )
+
+            # 7. Populate fingerprint→profile_id Redis cache for real-time CDC pipeline
+            # Use a fresh ArangoDB connection to avoid stale/closed session issues
+            # try:
+            #     fresh_arango = db_settings.get_arango_db()
+            #     _populate_fingerprint_cache(fresh_arango, segment_id, segment_name)
+            # except Exception:
+            #     logger.exception("Failed to create ArangoDB connection for fingerprint cache (non-fatal)")
 
         except Exception as e:
             pg_session.rollback()

@@ -1,0 +1,63 @@
+stages:
+  # - test  # TEMPORARILY DISABLED: Pending DB mocking/Service Containers
+  - build
+  - deploy
+
+# ---------------------------------------------------------
+# STAGE 2: BUILD MAIN APP (FastAPI / Celery)
+# ---------------------------------------------------------
+build_core_api:
+  stage: build
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  variables:
+    IMAGE_TAG: $CI_REGISTRY_IMAGE/core:$CI_COMMIT_SHORT_SHA
+    IMAGE_LATEST: $CI_REGISTRY_IMAGE/core:latest
+    DOCKER_TLS_CERTDIR: ""
+    # 1. Enable modern Docker BuildKit
+    DOCKER_BUILDKIT: 1
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+  script:
+    # 2. Tell Docker to pull the 'latest' image from the registry to use as a cache
+    - docker pull $IMAGE_LATEST || true
+    # 3. Build the image using the downloaded cache
+    - docker build --cache-from $IMAGE_LATEST --build-arg BUILDKIT_INLINE_CACHE=1 -t $IMAGE_TAG -t $IMAGE_LATEST .
+    - docker push $IMAGE_TAG
+    - docker push $IMAGE_LATEST
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "DATA-146-standardize-pipeline"'
+
+# ---------------------------------------------------------
+# FUTURE STAGE: BUILD CDC SERVICES (Placeholder)
+# ---------------------------------------------------------
+# build_cdc_poller:
+#   stage: build
+#   ... (same as above)
+#   variables:
+#     IMAGE_TAG: $CI_REGISTRY_IMAGE/cdc_poller:$CI_COMMIT_SHORT_SHA
+#   script:
+#     - docker build -f services/cdc_poller/Dockerfile -t $IMAGE_TAG .
+#     - docker push $IMAGE_TAG
+
+# ---------------------------------------------------------
+# STAGE 4: DEPLOY TO STAGING
+# ---------------------------------------------------------
+deploy_production:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client curl
+    - eval $(ssh-agent -s)
+    - echo "$PROD_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - ssh-keyscan -H $PROD_SERVER_IP >> ~/.ssh/known_hosts
+  script:
+    - ssh $PROD_USER@$PROD_SERVER_IP "export DOCKER_CONFIG=~/.docker-ci && mkdir -p ~/.docker-ci && echo '{}' > ~/.docker-ci/config.json && echo \"$CI_REGISTRY_PASSWORD\" | docker login -u \"$CI_REGISTRY_USER\" --password-stdin $CI_REGISTRY && cd ~/prod-app && bash deploy_blue_green.sh"
+  environment:
+    name: production
+  rules:
+    # Trigger manually when code is merged/pushed to api-ai-team
+    - if: '$CI_COMMIT_BRANCH == "api-ai-team"'
+      when: manual
