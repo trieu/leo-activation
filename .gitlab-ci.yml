@@ -44,19 +44,20 @@ build_core_api:
 # ---------------------------------------------------------
 # STAGE 4: DEPLOY TO STAGING
 # ---------------------------------------------------------
-deploy_staging:
+deploy_production:
   stage: deploy
   image: alpine:latest
   before_script:
-    # Install SSH tools so the CI container can talk to the host machine
-    - apk add --no-cache openssh-client
+    - apk add --no-cache openssh-client curl
     - eval $(ssh-agent -s)
-    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - echo "$PROD_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
     - mkdir -p ~/.ssh
-    - ssh-keyscan -H $STAGING_SERVER_IP >> ~/.ssh/known_hosts
+    - ssh-keyscan -H $PROD_SERVER_IP >> ~/.ssh/known_hosts
   script:
-    # We pipe the password into docker login securely, then pull and start the app!
-    - ssh $STAGING_USER@$STAGING_SERVER_IP "export DOCKER_CONFIG=~/.docker-ci && mkdir -p ~/.docker-ci && echo '{}' > ~/.docker-ci/config.json && cd ~/staging-app && echo \"$CI_REGISTRY_PASSWORD\" | docker login -u \"$CI_REGISTRY_USER\" --password-stdin $CI_REGISTRY && docker compose pull && docker compose up -d"
+    - ssh $PROD_USER@$PROD_SERVER_IP "export DOCKER_CONFIG=~/.docker-ci && mkdir -p ~/.docker-ci && echo '{}' > ~/.docker-ci/config.json && echo \"$CI_REGISTRY_PASSWORD\" | docker login -u \"$CI_REGISTRY_USER\" --password-stdin $CI_REGISTRY && cd ~/prod-app && bash deploy_blue_green.sh"
+  environment:
+    name: production
   rules:
-    # Make sure this matches the build job perfectly!
-    - if: '$CI_COMMIT_BRANCH == "DATA-146-standardize-pipeline"'
+    # Trigger manually when code is merged/pushed to api-ai-team
+    - if: '$CI_COMMIT_BRANCH == "api-ai-team"'
+      when: manual

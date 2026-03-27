@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Safely resolve the directory containing this script and docker-compose.yml
 # (Assumes this script is saved in the same directory as docker-compose.yml)
-PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="/build/leo-activation/c720-data-activation"
 cd "$PROJECT_ROOT"
 
 PROFILE_ID="6D8sWO4mkAQgwPV02vzzqi"
