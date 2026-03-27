@@ -27,7 +27,7 @@ build_core_api:
     - docker push $IMAGE_TAG
     - docker push $IMAGE_LATEST
   rules:
-    - if: '$CI_COMMIT_BRANCH == "DATA-146-standardize-pipeline"'
+    - if: $CI_COMMIT_BRANCH
 
 # ---------------------------------------------------------
 # FUTURE STAGE: BUILD CDC SERVICES (Placeholder)
