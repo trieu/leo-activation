@@ -67,6 +67,14 @@ sqlalchemy
 # ORM and SQL toolkit
 # Used for schema management, migrations, and complex queries
 
+pandas
+# Data manipulation and analysis library
+# Used for data processing, transformations, and analytics
+
+plotly
+# Interactive plotting library
+# Used for visualizations in analytics dashboards and reports
+
 python-arango
 # ArangoDB driver
 # Used for graph + document data (journeys, relationships, identity graphs)

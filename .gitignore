@@ -1,3 +1,7 @@
+# Python.gitignore
+test_output.html
+test_reports/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
